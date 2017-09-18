@@ -16,7 +16,6 @@
 #include <vector>
 #include <vapoursynth/VapourSynth.h>
 #include <vapoursynth/VSHelper.h>
-#include <iostream>
 
 
 typedef enum DescaleMode
@@ -426,12 +425,16 @@ static void process_plane_v(int height, int current_width, int &current_height, 
     current_height = height;
 }
 
+
 static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
 {
     DescaleData * d = static_cast<DescaleData *>(*instanceData);
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->node, frameCtx);
+
+
+    } else if (activationReason == arAllFramesReady) {
         if (d->process_h) {
             std::vector<double> weights = scaling_weights(d->mode, d->support, d->vi_dst.width, d->vi.width, d->b, d->c, d->shift_h);
             std::vector<double> transposed_weights = transpose_matrix(d->vi.width, weights);
@@ -524,7 +527,6 @@ static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, vo
             }
         }
 
-    } else if (activationReason == arAllFramesReady) {
         const VSFrameRef * src = vsapi->getFrameFilter(n, d->node, frameCtx);
         const VSFormat * fi = d->vi.format;
 

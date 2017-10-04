@@ -11,11 +11,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <vector>
-#include <vapoursynth/VapourSynth.h>
-#include <vapoursynth/VSHelper.h>
+//#include <bits/unordered_map.h>
+#include "vapoursynth/VapourSynth.h"
+#include "vapoursynth/VSHelper.h"
 
 
 typedef enum DescaleMode
@@ -53,6 +53,53 @@ struct DescaleData
     DescaleMode mode;
     int support;
 };
+
+///// Typedef for URL/Entry pair
+//typedef std::pair< std::string, Entry > EntryPair;
+//
+///// Typedef for Cache list
+//typedef std::list< EntryPair > CacheList;
+//
+///// Typedef for URL-indexed map into the CacheList
+//typedef boost::unordered_map< std::string, CacheList::iterator > CacheMap;
+//
+///// Cache LRU list
+//CacheList mCacheList;
+//
+///// Cache map into the list
+//CacheMap mCacheMap;
+//
+//
+//// create new entry
+//        Entry iEntry( ... );
+//
+//// push it to the front;
+//mCacheList.push_front( std::make_pair( aURL, iEntry ) );
+//
+//// add it to the cache map
+//mCacheMap[ aURL ] = mCacheList.begin();
+//
+//// increase count of entries
+//mEntries++;
+//
+//// check if it's time to remove the last element
+//if ( mEntries > mMaxEntries )
+//{
+//// erease from the map the last cache list element
+//mCacheMap.erase( mCacheList.back().first );
+//
+//// erase it from the list
+//mCacheList.pop_back();
+//
+//// decrease count
+//mEntries--;
+//}
+
+
+static std::vector<double>* get_matrix(void **instanceData, int w, int h){
+    auto * d = static_cast<DescaleData *>(*instanceData);
+}
+
 
 static std::vector<double> transpose_matrix(int rows, const std::vector<double> &matrix)
 {
@@ -333,7 +380,7 @@ static std::vector<double> scaling_weights(DescaleMode mode, int support, int sr
             else
                 real_pos = xpos;
 
-            int idx = static_cast<int>(std::floor(real_pos));
+            auto idx = static_cast<int>(real_pos);
             weights[i * src_dim + idx] += calculate_weight(mode, support, xpos - pos, b, c) / total;
         }
     }
@@ -359,7 +406,7 @@ static void process_plane_h(int width, int current_height, int &current_width, i
                 sum += weights[j * columns + k - weights_left_idx[j]] * srcp[k];
             dstp[j] = sum;
 
-            sum = 0.;
+            sum = 0.0;
             for (int k = start; k < j; ++k) {
                 sum += lower[j * (c - 1) + k - start] * dstp[k];
             }
@@ -402,7 +449,7 @@ static void process_plane_v(int height, int current_width, int &current_height, 
                 sum += weights[j * columns + k - weights_left_idx[j]] * srcp[k * src_stride + i];
             dstp[j * dst_stride + i] = sum;
 
-            sum = 0.;
+            sum = 0.0;
             for (int k = start; k < j; ++k) {
                 sum += lower[j * (c - 1) + k - start] * dstp[k * dst_stride + i];
             }
@@ -428,7 +475,7 @@ static void process_plane_v(int height, int current_width, int &current_height, 
 
 static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
 {
-    DescaleData * d = static_cast<DescaleData *>(*instanceData);
+    auto * d = static_cast<DescaleData *>(*instanceData);
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->node, frameCtx);
@@ -538,32 +585,32 @@ static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, vo
             int current_height = vsapi->getFrameHeight(src, plane);
 
             const int src_stride = vsapi->getStride(src, plane) / sizeof(float);
-            const float * srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, plane));
+            const auto * srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, plane));
 
             if (d->process_h && d->process_v) {
                 const int intermediate_stride = vsapi->getStride(intermediate, plane) / sizeof(float);
-                float * VS_RESTRICT intermediatep = reinterpret_cast<float *>(vsapi->getWritePtr(intermediate, plane));
+                auto * VS_RESTRICT intermediatep = reinterpret_cast<float *>(vsapi->getWritePtr(intermediate, plane));
 
                 process_plane_h(d->vi_dst.width, current_height, current_width, d->bandwidth, d->weights_h_left_idx, d->weights_h_right_idx, d->weights_h,
                                 d->lower_h, d->upper_h, d->diagonal_h, src_stride, intermediate_stride, srcp, intermediatep);
 
 
                 const int dst_stride = vsapi->getStride(dst, plane) / sizeof(float);
-                float * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
+                auto * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
 
                 process_plane_v(d->vi_dst.height, current_width, current_height, d->bandwidth, d->weights_v_left_idx, d->weights_v_right_idx, d->weights_v,
                                 d->lower_v, d->upper_v, d->diagonal_v, intermediate_stride, dst_stride, intermediatep, dstp);
 
             } else if (d->process_h) {
                 const int dst_stride = vsapi->getStride(dst, plane) / sizeof(float);
-                float * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
+                auto * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
 
                 process_plane_h(d->vi_dst.width, current_height, current_width, d->bandwidth, d->weights_h_left_idx, d->weights_h_right_idx, d->weights_h,
                                 d->lower_h, d->upper_h, d->diagonal_h, src_stride, dst_stride, srcp, dstp);
 
             } else if (d->process_v) {
                 const int dst_stride = vsapi->getStride(dst, plane) / sizeof(float);
-                float * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
+                auto * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
 
                 process_plane_v(d->vi_dst.height, current_width, current_height, d->bandwidth, d->weights_v_left_idx, d->weights_v_right_idx, d->weights_v,
                                 d->lower_v, d->upper_v, d->diagonal_v, src_stride, dst_stride, srcp, dstp);
@@ -590,14 +637,14 @@ static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, vo
 
 static void VS_CC descale_init(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi)
 {
-    DescaleData * d = static_cast<DescaleData *>(*instanceData);
+    auto * d = static_cast<DescaleData *>(*instanceData);
     vsapi->setVideoInfo(&d->vi_dst, 1, node);
 }
 
 
 static void VS_CC descale_free(void *instanceData, VSCore *core, const VSAPI *vsapi)
 {
-    DescaleData * d = static_cast<DescaleData *>(instanceData);
+    auto * d = static_cast<DescaleData *>(instanceData);
 
     vsapi->freeNode(d->node);
 
@@ -607,9 +654,10 @@ static void VS_CC descale_free(void *instanceData, VSCore *core, const VSAPI *vs
 
 static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi)
 {
-    DescaleMode mode = static_cast<DescaleMode>(reinterpret_cast<std::uintptr_t>(userData));
+    auto mode = static_cast<DescaleMode>(reinterpret_cast<std::uintptr_t>(userData));
 
     DescaleData d{};
+
     d.mode = mode;
     d.node = vsapi->propGetNode(in, "src", 0, nullptr);
     d.vi = *vsapi->getVideoInfo(d.node);
@@ -622,17 +670,8 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
         return;
     }
 
-    d.vi_dst.width = int64ToIntS(vsapi->propGetInt(in, "width", 0, nullptr));
-
-    d.vi_dst.height = int64ToIntS(vsapi->propGetInt(in, "height", 0, nullptr));
-
-    d.shift_h = vsapi->propGetFloat(in, "src_left", 0, &err);
-    if (err)
-        d.shift_h = 0;
-
-    d.shift_v = vsapi->propGetFloat(in, "src_top", 0, &err);
-    if (err)
-        d.shift_v = 0;
+    d.vi_dst.width = static_cast<int>(vsapi->propGetInt(in, "width", 0, nullptr));
+    d.vi_dst.height = static_cast<int>(vsapi->propGetInt(in, "height", 0, nullptr));
 
     if (d.vi_dst.width < 1 || d.vi_dst.height < 1) {
         vsapi->setError(out, "Descale: width and height must be bigger than 0.");
@@ -646,32 +685,38 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
         return;
     }
 
+    d.shift_h = static_cast<float>(vsapi->propGetFloat(in, "src_left", 0, &err));
+    if (err)
+        d.shift_h = 0;
+
+    d.shift_v = static_cast<float>(vsapi->propGetFloat(in, "src_top", 0, &err));
+    if (err)
+        d.shift_v = 0;
+
+
     d.process_h = d.vi_dst.width != d.vi.width;
     d.process_v = d.vi_dst.height != d.vi.height;
 
-    int support;
     std::string funcname;
 
     if (mode == bilinear) {
-        support = 1;
         d.support = 1;
         funcname = "Debilinear";
 
     } else if (mode == bicubic) {
         d.b = vsapi->propGetFloat(in, "b", 0, &err);
         if (err)
-            d.b = static_cast<double>(1) / 3;
+            d.b = 1. / 3.;
 
         d.c = vsapi->propGetFloat(in, "c", 0, &err);
         if (err)
-            d.c = static_cast<double>(1) / 3;
+            d.c = 1. / 3.;
 
-        support = 2;
         d.support = 3;
         funcname = "Debicubic";
 
     } else if (mode == lanczos) {
-        d.taps = int64ToIntS(vsapi->propGetInt(in, "taps", 0, &err));
+        d.taps = static_cast<int>(vsapi->propGetInt(in, "taps", 0, &err));
         if (err)
             d.taps = 3;
 
@@ -680,25 +725,22 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
             vsapi->freeNode(d.node);
             return;
         }
-
-        support = d.taps;
         d.support = d.taps;
         funcname = "Delanczos";
 
     } else if (mode == spline16) {
-        support = 2;
         d.support = 2;
         funcname = "Despline16";
 
-    } else if (mode == spline36) {
-        support = 3;
+    } else {
+        //  if (mode == spline36)
         d.support = 3;
         funcname = "Despline36";
     }
 
-    d.bandwidth = support * 4 - 1;
+    d.bandwidth = d.support * 4 - 1;
 
-    DescaleData * data = new DescaleData{ d };
+    auto * data = new DescaleData{ d };
     vsapi->createFilter(in, out, funcname.c_str(), descale_init, descale_get_frame, descale_free, fmParallel, 0, data, core);
 }
 

@@ -13,9 +13,12 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-//#include <bits/unordered_map.h>
+#include <unordered_map>
+#include <list>
 #include "vapoursynth/VapourSynth.h"
 #include "vapoursynth/VSHelper.h"
+
+using namespace std;
 
 
 typedef enum DescaleMode
@@ -28,77 +31,92 @@ typedef enum DescaleMode
 } DescaleMode;
 
 
+struct Matrix {
+    std::vector<float> upper;
+    std::vector<float> diagonal;
+    std::vector<float> lower;
+    std::vector<float> weights;
+    std::vector<int> weights_left_idx;
+    std::vector<int> weights_right_idx;
+};
+
+struct Node {
+    long key;
+    Matrix* value;
+    Node *prev, *next;
+};
+
+class DoublyLinkedList {
+    Node *front, *back;
+public:
+    Node* add_page_to_head(long key, Matrix* value) {
+        auto *page = new Node{key, value};
+        if(!front && !back) {
+            front = back = page;
+        }
+        else {
+            page->next = front;
+            front->prev = page;
+            front = page;
+        }
+        return page;
+    }
+
+    void move_page_to_head(Node *page) {
+        if(page==front) {
+            return;
+        }
+        if(page == back) {
+            back = back->prev;
+            back->next = nullptr;
+        }
+        else {
+            page->prev->next = page->next;
+            page->next->prev = page->prev;
+        }
+
+        page->next = front;
+        page->prev = nullptr;
+        front->prev = page;
+        front = page;
+    }
+
+    void remove_rear_page() {
+        if(back == nullptr) {
+            return;
+        }
+        if(front == back) {
+            delete back;
+            front = back = nullptr;
+        }
+        else {
+            Node *temp = back;
+            back = back->prev;
+            back->next = nullptr;
+            delete temp;
+        }
+    }
+    Node* get_rear_page() {
+        return back;
+    }
+
+};
+
 struct DescaleData
 {
+    DescaleMode mode;
     VSNodeRef * node;
+    int support;
     VSVideoInfo vi;
     VSVideoInfo vi_dst;
     int bandwidth;
     int taps;
     double b, c;
     float shift_h, shift_v;
-    bool process_h, process_v;
-    std::vector<float> upper_h;
-    std::vector<float> upper_v;
-    std::vector<float> diagonal_h;
-    std::vector<float> diagonal_v;
-    std::vector<float> lower_h;
-    std::vector<float> lower_v;
-    std::vector<float> weights_h;
-    std::vector<float> weights_v;
-    std::vector<int> weights_h_left_idx;
-    std::vector<int> weights_v_left_idx;
-    std::vector<int> weights_h_right_idx;
-    std::vector<int> weights_v_right_idx;
-    DescaleMode mode;
-    int support;
+    int maxCacheSize;
+    DoublyLinkedList *cacheList;
+    unordered_map<long, Node*> cacheMap;
 };
-
-///// Typedef for URL/Entry pair
-//typedef std::pair< std::string, Entry > EntryPair;
-//
-///// Typedef for Cache list
-//typedef std::list< EntryPair > CacheList;
-//
-///// Typedef for URL-indexed map into the CacheList
-//typedef boost::unordered_map< std::string, CacheList::iterator > CacheMap;
-//
-///// Cache LRU list
-//CacheList mCacheList;
-//
-///// Cache map into the list
-//CacheMap mCacheMap;
-//
-//
-//// create new entry
-//        Entry iEntry( ... );
-//
-//// push it to the front;
-//mCacheList.push_front( std::make_pair( aURL, iEntry ) );
-//
-//// add it to the cache map
-//mCacheMap[ aURL ] = mCacheList.begin();
-//
-//// increase count of entries
-//mEntries++;
-//
-//// check if it's time to remove the last element
-//if ( mEntries > mMaxEntries )
-//{
-//// erease from the map the last cache list element
-//mCacheMap.erase( mCacheList.back().first );
-//
-//// erase it from the list
-//mCacheList.pop_back();
-//
-//// decrease count
-//mEntries--;
-//}
-
-
-static std::vector<double>* get_matrix(void **instanceData, int w, int h){
-    auto * d = static_cast<DescaleData *>(*instanceData);
-}
 
 
 static std::vector<double> transpose_matrix(int rows, const std::vector<double> &matrix)
@@ -473,6 +491,70 @@ static void process_plane_v(int height, int current_width, int &current_height, 
 }
 
 
+
+Matrix* genMatrix(DescaleData *d, int res, float shift){
+    // binary bullshit
+    long key = (res << sizeof(int)) + reinterpret_cast<int &>(shift);
+
+    auto node = d->cacheMap[key];
+    if (node) {
+        d->cacheList->move_page_to_head(node);
+        return node->value;
+    }
+    auto matrix = new Matrix;
+    if(d->cacheMap.size() == d->maxCacheSize) {
+        long k = d->cacheList->get_rear_page()->key;
+        d->cacheMap.erase(k);
+        d->cacheList->remove_rear_page();
+    }
+    Node *page = d->cacheList->add_page_to_head(key, matrix);
+    d->cacheMap[key] = page;
+    std::vector<double> weights = scaling_weights(d->mode, d->support, d->vi_dst.width, res, d->b, d->c, shift);
+    std::vector<double> transposed_weights = transpose_matrix(res, weights);
+
+    matrix->weights_left_idx.resize(d->vi_dst.width);
+    matrix->weights_right_idx.resize(d->vi_dst.width);
+    for (int i = 0; i < d->vi_dst.width; ++i) {
+        for (int j = 0; j < res; ++j) {
+            if (transposed_weights[i * res + j] != 0.0) {
+                matrix->weights_left_idx[i] = j;
+                break;
+            }
+        }
+        for (int j = res - 1; j >= 0; --j) {
+            if (transposed_weights[i * res + j] != 0.0) {
+                matrix->weights_right_idx[i] = j + 1;
+                break;
+            }
+        }
+    }
+
+    std::vector<double> multiplied_weights = multiply_sparse_matrices(d->vi_dst.width, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights, weights);
+
+    std::vector<double> upper (d->vi_dst.width * d->vi_dst.width, 0);
+    upper = compress_symmetric_banded_matrix(d->vi_dst.width, d->bandwidth, multiplied_weights);
+    banded_ldlt_decomposition(d->vi_dst.width, d->bandwidth, upper);
+    upper = uncrompress_symmetric_banded_matrix(d->vi_dst.width, d->bandwidth, upper);
+    std::vector<double> lower = transpose_matrix(d->vi_dst.width, upper);
+    multiply_banded_matrix_with_diagonal(d->vi_dst.width, d->bandwidth, lower);
+
+    transposed_weights = compress_matrix(d->vi_dst.width, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights);
+
+    unsigned long compressed_columns = transposed_weights.size() / d->vi_dst.width;
+    matrix->weights.resize(d->vi_dst.width * compressed_columns, 0);
+    matrix->diagonal.resize(d->vi_dst.width, 0);
+    matrix->lower.resize(d->vi_dst.width * ((d->bandwidth + 1) / 2 - 1), 0);
+    matrix->upper.resize(d->vi_dst.width * ((d->bandwidth + 1) / 2 - 1), 0);
+
+    extract_compressed_lower_upper_diagonal(d->vi_dst.width, d->bandwidth, lower, upper, matrix->lower, matrix->upper, matrix->diagonal);
+    for (int i = 0; i < d->vi_dst.width; ++i) {
+        for (int j = 0; j < compressed_columns; ++j) {
+            matrix->weights[i * compressed_columns + j] = static_cast<float>(transposed_weights[i * compressed_columns + j]);
+        }
+    }
+    return matrix;
+}
+
 static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
 {
     auto * d = static_cast<DescaleData *>(*instanceData);
@@ -482,144 +564,70 @@ static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, vo
 
 
     } else if (activationReason == arAllFramesReady) {
-        if (d->process_h) {
-            std::vector<double> weights = scaling_weights(d->mode, d->support, d->vi_dst.width, d->vi.width, d->b, d->c, d->shift_h);
-            std::vector<double> transposed_weights = transpose_matrix(d->vi.width, weights);
-
-            d->weights_h_left_idx.resize(d->vi_dst.width);
-            d->weights_h_right_idx.resize(d->vi_dst.width);
-            for (int i = 0; i < d->vi_dst.width; ++i) {
-                for (int j = 0; j < d->vi.width; ++j) {
-                    if (transposed_weights[i * d->vi.width + j] != 0.0) {
-                        d->weights_h_left_idx[i] = j;
-                        break;
-                    }
-                }
-                for (int j = d->vi.width - 1; j >= 0; --j) {
-                    if (transposed_weights[i * d->vi.width + j] != 0.0) {
-                        d->weights_h_right_idx[i] = j + 1;
-                        break;
-                    }
-                }
-            }
-
-            std::vector<double> multiplied_weights = multiply_sparse_matrices(d->vi_dst.width, d->weights_h_left_idx, d->weights_h_right_idx, transposed_weights, weights);
-
-            std::vector<double> upper (d->vi_dst.width * d->vi_dst.width, 0);
-            upper = compress_symmetric_banded_matrix(d->vi_dst.width, d->bandwidth, multiplied_weights);
-            banded_ldlt_decomposition(d->vi_dst.width, d->bandwidth, upper);
-            upper = uncrompress_symmetric_banded_matrix(d->vi_dst.width, d->bandwidth, upper);
-            std::vector<double> lower = transpose_matrix(d->vi_dst.width, upper);
-            multiply_banded_matrix_with_diagonal(d->vi_dst.width, d->bandwidth, lower);
-
-            transposed_weights = compress_matrix(d->vi_dst.width, d->weights_h_left_idx, d->weights_h_right_idx, transposed_weights);
-
-            int compressed_columns = transposed_weights.size() / d->vi_dst.width;
-            d->weights_h.resize(d->vi_dst.width * compressed_columns, 0);
-            d->diagonal_h.resize(d->vi_dst.width, 0);
-            d->lower_h.resize(d->vi_dst.width * ((d->bandwidth + 1) / 2 - 1), 0);
-            d->upper_h.resize(d->vi_dst.width * ((d->bandwidth + 1) / 2 - 1), 0);
-
-            extract_compressed_lower_upper_diagonal(d->vi_dst.width, d->bandwidth, lower, upper, d->lower_h, d->upper_h, d->diagonal_h);
-            for (int i = 0; i < d->vi_dst.width; ++i) {
-                for (int j = 0; j < compressed_columns; ++j) {
-                    d->weights_h[i * compressed_columns + j] = static_cast<float>(transposed_weights[i * compressed_columns + j]);
-                }
-            }
-        }
-
-        if (d->process_v) {
-            std::vector<double> weights = scaling_weights(d->mode, d->support, d->vi_dst.height, d->vi.height, d->b, d->c, d->shift_v);
-            std::vector<double> transposed_weights = transpose_matrix(d->vi.height, weights);
-
-            d->weights_v_left_idx.resize(d->vi_dst.height);
-            d->weights_v_right_idx.resize(d->vi_dst.height);
-            for (int i = 0; i < d->vi_dst.height; ++i) {
-                for (int j = 0; j < d->vi.height; ++j) {
-                    if (transposed_weights[i * d->vi.height + j] != 0.0) {
-                        d->weights_v_left_idx[i] = j;
-                        break;
-                    }
-                }
-                for (int j = d->vi.height - 1; j >= 0; --j) {
-                    if (transposed_weights[i * d->vi.height + j] != 0.0) {
-                        d->weights_v_right_idx[i] = j + 1;
-                        break;
-                    }
-                }
-            }
-
-            std::vector<double> multiplied_weights = multiply_sparse_matrices(d->vi_dst.height, d->weights_v_left_idx, d->weights_v_right_idx, transposed_weights, weights);
-
-            std::vector<double> upper (d->vi_dst.height * d->vi_dst.height, 0);
-            upper = compress_symmetric_banded_matrix(d->vi_dst.height, d->bandwidth, multiplied_weights);
-            banded_ldlt_decomposition(d->vi_dst.height, d->bandwidth, upper);
-            upper = uncrompress_symmetric_banded_matrix(d->vi_dst.height, d->bandwidth, upper);
-            std::vector<double> lower = transpose_matrix(d->vi_dst.height, upper);
-            multiply_banded_matrix_with_diagonal(d->vi_dst.height, d->bandwidth, lower);
-
-            transposed_weights = compress_matrix(d->vi_dst.height, d->weights_v_left_idx, d->weights_v_right_idx, transposed_weights);
-
-            int compressed_columns = transposed_weights.size() / d->vi_dst.height;
-            d->weights_v.resize(d->vi_dst.height * compressed_columns, 0);
-            d->diagonal_v.resize(d->vi_dst.height, 0);
-            d->lower_v.resize(d->vi_dst.height * ((d->bandwidth + 1) / 2 - 1), 0);
-            d->upper_v.resize(d->vi_dst.height * ((d->bandwidth + 1) / 2 - 1), 0);
-
-            extract_compressed_lower_upper_diagonal(d->vi_dst.height, d->bandwidth, lower, upper, d->lower_v, d->upper_v, d->diagonal_v);
-            for (int i = 0; i < d->vi_dst.height; ++i) {
-                for (int j = 0; j < compressed_columns; ++j) {
-                    d->weights_v[i * compressed_columns + j] = static_cast<float>(transposed_weights[i * compressed_columns + j]);
-                }
-            }
-        }
 
         const VSFrameRef * src = vsapi->getFrameFilter(n, d->node, frameCtx);
         const VSFormat * fi = d->vi.format;
+
+        int width = vsapi->getFrameWidth(src, 0);
+        int height = vsapi->getFrameHeight(src, 0);
+
+        bool process_h = width != d->vi_dst.width;
+        bool process_v = height != d->vi_dst.height;
+
+        Matrix * hmatrix;
+        Matrix * vmatrix;
+
+        if (process_h) {
+            hmatrix = genMatrix(d, width, d->shift_h);
+        }
+        if (process_v) {
+            vmatrix = genMatrix(d, height, d->shift_v);
+        }
 
         VSFrameRef * intermediate = vsapi->newVideoFrame(fi, d->vi_dst.width, d->vi.height, nullptr, core);
         VSFrameRef * dst = vsapi->newVideoFrame(fi, d->vi_dst.width, d->vi_dst.height, src, core);
 
         for (int plane = 0; plane < d->vi.format->numPlanes; ++plane) {
-            int current_width = vsapi->getFrameWidth(src, plane);
-            int current_height = vsapi->getFrameHeight(src, plane);
 
             const int src_stride = vsapi->getStride(src, plane) / sizeof(float);
             const auto * srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, plane));
 
-            if (d->process_h && d->process_v) {
+            if (process_h && process_v) {
                 const int intermediate_stride = vsapi->getStride(intermediate, plane) / sizeof(float);
                 auto * VS_RESTRICT intermediatep = reinterpret_cast<float *>(vsapi->getWritePtr(intermediate, plane));
 
-                process_plane_h(d->vi_dst.width, current_height, current_width, d->bandwidth, d->weights_h_left_idx, d->weights_h_right_idx, d->weights_h,
-                                d->lower_h, d->upper_h, d->diagonal_h, src_stride, intermediate_stride, srcp, intermediatep);
-
+                process_plane_h(d->vi_dst.width, height, width, d->bandwidth, hmatrix->weights_left_idx,
+                                hmatrix->weights_right_idx, hmatrix->weights, hmatrix->lower, hmatrix->upper,
+                                hmatrix->diagonal, src_stride, intermediate_stride, srcp, intermediatep);
 
                 const int dst_stride = vsapi->getStride(dst, plane) / sizeof(float);
                 auto * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
 
-                process_plane_v(d->vi_dst.height, current_width, current_height, d->bandwidth, d->weights_v_left_idx, d->weights_v_right_idx, d->weights_v,
-                                d->lower_v, d->upper_v, d->diagonal_v, intermediate_stride, dst_stride, intermediatep, dstp);
+                process_plane_v(d->vi_dst.height, width, height, d->bandwidth, vmatrix->weights_left_idx,
+                                vmatrix->weights_right_idx, vmatrix->weights, vmatrix->lower, vmatrix->upper,
+                                vmatrix->diagonal, intermediate_stride, dst_stride, intermediatep, dstp);
 
-            } else if (d->process_h) {
+            } else if (process_h) {
                 const int dst_stride = vsapi->getStride(dst, plane) / sizeof(float);
                 auto * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
 
-                process_plane_h(d->vi_dst.width, current_height, current_width, d->bandwidth, d->weights_h_left_idx, d->weights_h_right_idx, d->weights_h,
-                                d->lower_h, d->upper_h, d->diagonal_h, src_stride, dst_stride, srcp, dstp);
+                process_plane_h(d->vi_dst.width, height, width, d->bandwidth, hmatrix->weights_left_idx,
+                                hmatrix->weights_right_idx, hmatrix->weights, hmatrix->lower, hmatrix->upper,
+                                hmatrix->diagonal, src_stride, dst_stride, srcp, dstp);
 
-            } else if (d->process_v) {
+            } else if (process_v) {
                 const int dst_stride = vsapi->getStride(dst, plane) / sizeof(float);
                 auto * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
 
-                process_plane_v(d->vi_dst.height, current_width, current_height, d->bandwidth, d->weights_v_left_idx, d->weights_v_right_idx, d->weights_v,
-                                d->lower_v, d->upper_v, d->diagonal_v, src_stride, dst_stride, srcp, dstp);
+                process_plane_v(d->vi_dst.height, width, height, d->bandwidth, vmatrix->weights_left_idx,
+                                vmatrix->weights_right_idx, vmatrix->weights, vmatrix->lower, vmatrix->upper,
+                                vmatrix->diagonal, src_stride, dst_stride, srcp, dstp);
             }
         }
 
         vsapi->freeFrame(intermediate);
 
-        if (d->process_h || d->process_v) {
+        if (process_h || process_v) {
             vsapi->freeFrame(src);
 
             return dst;
@@ -648,6 +656,12 @@ static void VS_CC descale_free(void *instanceData, VSCore *core, const VSAPI *vs
 
     vsapi->freeNode(d->node);
 
+    unordered_map<long, Node*>::iterator i1;
+    auto end = d->cacheMap.end();
+    for(i1=d->cacheMap.begin(); i1->first != end->first; i1++) {
+        delete i1->second;
+    }
+    delete d->cacheList;
     delete d;
 }
 
@@ -658,6 +672,8 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 
     DescaleData d{};
 
+    d.cacheList = new DoublyLinkedList();
+    d.cacheMap = unordered_map<long, Node*>();
     d.mode = mode;
     d.node = vsapi->propGetNode(in, "src", 0, nullptr);
     d.vi = *vsapi->getVideoInfo(d.node);
@@ -685,6 +701,11 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
         return;
     }
 
+
+    d.maxCacheSize = static_cast<int>(vsapi->propGetInt(in, "cache_size", 0, &err));
+    if (err || d.maxCacheSize < 1)
+        d.maxCacheSize = 20;
+
     d.shift_h = static_cast<float>(vsapi->propGetFloat(in, "src_left", 0, &err));
     if (err)
         d.shift_h = 0;
@@ -692,10 +713,6 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
     d.shift_v = static_cast<float>(vsapi->propGetFloat(in, "src_top", 0, &err));
     if (err)
         d.shift_v = 0;
-
-
-    d.process_h = d.vi_dst.width != d.vi.width;
-    d.process_v = d.vi_dst.height != d.vi.height;
 
     std::string funcname;
 
@@ -747,14 +764,15 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin)
 {
-    configFunc("test.test.getnative", "descale_getnative", "Undo linear interpolation", VAPOURSYNTH_API_VERSION, 1, plugin);
+    configFunc("toggaf.asi.xe", "descale", "Undo linear interpolation", VAPOURSYNTH_API_VERSION, 1, plugin);
 
     registerFunc("Debilinear",
             "src:clip;"
             "width:int;"
             "height:int;"
             "src_left:float:opt;"
-            "src_top:float:opt",
+            "src_top:float:opt;"
+            "cache_size:int:opt",
             descale_create, reinterpret_cast<void *>(bilinear), plugin);
 
     registerFunc("Debicubic",
@@ -764,7 +782,8 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "b:float:opt;"
             "c:float:opt;"
             "src_left:float:opt;"
-            "src_top:float:opt",
+            "src_top:float:opt;"
+            "cache_size:int:opt",
             descale_create, reinterpret_cast<void *>(bicubic), plugin);
 
     registerFunc("Delanczos",
@@ -773,7 +792,8 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "height:int;"
             "taps:int:opt;"
             "src_left:float:opt;"
-            "src_top:float:opt",
+            "src_top:float:opt;"
+            "cache_size:int:opt",
             descale_create, reinterpret_cast<void *>(lanczos), plugin);
 
     registerFunc("Despline16",
@@ -781,7 +801,8 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "width:int;"
             "height:int;"
             "src_left:float:opt;"
-            "src_top:float:opt",
+            "src_top:float:opt;"
+            "cache_size:int:opt",
             descale_create, reinterpret_cast<void *>(spline16), plugin);
 
     registerFunc("Despline36",
@@ -789,6 +810,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "width:int;"
             "height:int;"
             "src_left:float:opt;"
-            "src_top:float:opt",
+            "src_top:float:opt;"
+            "cache_size:int:opt",
             descale_create, reinterpret_cast<void *>(spline36), plugin);
 }

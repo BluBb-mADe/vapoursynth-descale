@@ -14,7 +14,6 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include <list>
 #include "vapoursynth/VapourSynth.h"
 #include "vapoursynth/VSHelper.h"
 
@@ -32,12 +31,12 @@ typedef enum DescaleMode
 
 
 struct Matrix {
-    std::vector<float> upper;
-    std::vector<float> diagonal;
-    std::vector<float> lower;
-    std::vector<float> weights;
-    std::vector<int> weights_left_idx;
-    std::vector<int> weights_right_idx;
+    vector<float> upper;
+    vector<float> diagonal;
+    vector<float> lower;
+    vector<float> weights;
+    vector<int> weights_left_idx;
+    vector<int> weights_right_idx;
 };
 
 struct Node {
@@ -81,7 +80,7 @@ public:
         front = page;
     }
 
-    void remove_rear_page() {
+    void remove_back_page() {
         if(back == nullptr) {
             return;
         }
@@ -96,7 +95,7 @@ public:
             delete temp;
         }
     }
-    Node* get_rear_page() {
+    Node* get_back_page() {
         return back;
     }
 
@@ -119,10 +118,10 @@ struct DescaleData
 };
 
 
-static std::vector<double> transpose_matrix(int rows, const std::vector<double> &matrix)
+static vector<double> transpose_matrix(int rows, const vector<double> &matrix)
 {
     int columns = matrix.size() / rows;
-    std::vector<double> transposed_matrix (matrix.size(), 0);
+    vector<double> transposed_matrix (matrix.size(), 0);
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < columns; ++j) {
             transposed_matrix[i + rows * j] = matrix[i * columns + j];
@@ -133,10 +132,10 @@ static std::vector<double> transpose_matrix(int rows, const std::vector<double> 
 }
 
 
-static std::vector<double> multiply_sparse_matrices(int rows, const std::vector<int> &lidx, const std::vector<int> &ridx, const std::vector<double> &lm, const std::vector<double> &rm)
+static vector<double> multiply_sparse_matrices(int rows, const vector<int> &lidx, const vector<int> &ridx, const vector<double> &lm, const vector<double> &rm)
 {
     int columns = lm.size() / rows;
-    std::vector<double> multiplied (rows * rows, 0);
+    vector<double> multiplied (rows * rows, 0);
 
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < rows; ++j) {
@@ -154,12 +153,12 @@ static std::vector<double> multiply_sparse_matrices(int rows, const std::vector<
 }
 
 
-static void multiply_banded_matrix_with_diagonal(int rows, int bandwidth, std::vector<double> &matrix)
+static void multiply_banded_matrix_with_diagonal(int rows, int bandwidth, vector<double> &matrix)
 {
     int c = (bandwidth + 1) / 2;
 
     for (int i = 1; i < rows; ++i) {
-        int start = std::max(i - (c - 1), 0);
+        int start = max(i - (c - 1), 0);
         for (int j = start; j < i; ++j) {
             matrix[i * rows + j] *= matrix[j * rows + j];
         }
@@ -171,14 +170,14 @@ static void multiply_banded_matrix_with_diagonal(int rows, int bandwidth, std::v
 // Input is only the upper part of a banded symmetrical matrix in compressed form.
 // The input matrix is modified in-place and contains L' and D in compressed form
 // after decomposition. The main diagonal of ones of L' is not saved.
-static void banded_ldlt_decomposition(int rows, int bandwidth, std::vector<double> &matrix)
+static void banded_ldlt_decomposition(int rows, int bandwidth, vector<double> &matrix)
 {
     int c = (bandwidth + 1) / 2;
     // Division by 0 can happen if shift is used
-    double eps = std::numeric_limits<double>::epsilon();
+    double eps = numeric_limits<double>::epsilon();
 
     for (int k = 0; k < rows; ++k) {
-        int last = std::min(k + c - 1, rows - 1) - k;
+        int last = min(k + c - 1, rows - 1) - k;
 
         for (int j = 1; j <= last; ++j) {
             int i = k + j;
@@ -197,7 +196,7 @@ static void banded_ldlt_decomposition(int rows, int bandwidth, std::vector<doubl
 }
 
 
-static std::vector<double> compress_matrix(int rows, const std::vector<int> &lidx, const std::vector<int> &ridx, const std::vector<double> &matrix)
+static vector<double> compress_matrix(int rows, const vector<int> &lidx, const vector<int> &ridx, const vector<double> &matrix)
 {
     int columns = matrix.size() / rows;
     int max = 0;
@@ -207,7 +206,7 @@ static std::vector<double> compress_matrix(int rows, const std::vector<int> &lid
             max = ridx[i] - lidx[i];
     }
 
-    std::vector<double> compressed (rows * max, 0);
+    vector<double> compressed (rows * max, 0);
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < max; ++j) {
             compressed[i * max + j] = matrix[i * columns + lidx[i] + j];
@@ -218,10 +217,10 @@ static std::vector<double> compress_matrix(int rows, const std::vector<int> &lid
 }
 
 
-static std::vector<double> compress_symmetric_banded_matrix(int rows, int bandwidth, const std::vector<double> &matrix)
+static vector<double> compress_symmetric_banded_matrix(int rows, int bandwidth, const vector<double> &matrix)
 {
     int c = (bandwidth + 1) / 2;
-    std::vector<double> compressed (rows * c, 0);
+    vector<double> compressed (rows * c, 0);
 
     for (int i = 0; i < rows; ++i) {
         if (i < rows - c - 1) {
@@ -242,10 +241,10 @@ static std::vector<double> compress_symmetric_banded_matrix(int rows, int bandwi
 }
 
 
-static std::vector<double> uncrompress_symmetric_banded_matrix(int rows, int bandwidth, const std::vector<double> &matrix)
+static vector<double> uncrompress_symmetric_banded_matrix(int rows, int bandwidth, const vector<double> &matrix)
 {
     int c = (bandwidth + 1) / 2;
-    std::vector<double> uncompressed (rows * rows, 0);
+    vector<double> uncompressed (rows * rows, 0);
 
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < c; ++j) {
@@ -260,22 +259,22 @@ static std::vector<double> uncrompress_symmetric_banded_matrix(int rows, int ban
 }
 
 
-static void extract_compressed_lower_upper_diagonal(int rows, int bandwidth, const std::vector<double> &lower, const std::vector<double> &upper, std::vector<float> &compressed_lower, std::vector<float> &compressed_upper, std::vector<float> &diagonal)
+static void extract_compressed_lower_upper_diagonal(int rows, int bandwidth, const vector<double> &lower, const vector<double> &upper, vector<float> &compressed_lower, vector<float> &compressed_upper, vector<float> &diagonal)
 {
     int columns = lower.size() / rows;
     int c = (bandwidth + 1) / 2;
     // Division by 0 can happen if shift is used
-    double eps = std::numeric_limits<double>::epsilon();
+    double eps = numeric_limits<double>::epsilon();
 
     for (int i = 0; i < rows; ++i) {
-        int start = std::max(i - c + 1, 0);
+        int start = max(i - c + 1, 0);
         for (int j = start; j < start + c - 1; ++j) {
             compressed_lower[i * (c - 1) + j - start] = static_cast<float>(lower[i * columns + j]);
         }
     }
 
     for (int i = 0; i < rows; ++i) {
-        int start = std::min(i + c - 1, rows - 1);
+        int start = min(i + c - 1, rows - 1);
         for (int j = start; j > i; --j) {
             compressed_upper[i * (c - 1) + c - 2 + j - start] = static_cast<float>(upper[i * columns + j]);
         }
@@ -293,7 +292,7 @@ static constexpr double PI = 3.14159265358979323846;
 
 static double sinc(double x)
 {
-    return x == 0.0 ? 1.0 : std::sin(x * PI) / (x * PI);
+    return x == 0.0 ? 1.0 : sin(x * PI) / (x * PI);
 }
 
 
@@ -311,10 +310,10 @@ static double cube(double x)
 
 static double calculate_weight(DescaleMode mode, int support, double distance, double b, double c)
 {
-    distance = std::abs(distance);
+    distance = abs(distance);
 
     if (mode == bilinear) {
-        return std::max(1.0 - distance, 0.0);
+        return max(1.0 - distance, 0.0);
 
     } else if (mode == bicubic) {
         if (distance < 1)
@@ -363,19 +362,19 @@ static double round_halfup(double x) noexcept
      * must be preserved. This precludes the use of modes such as
      * half-to-even and half-away-from-zero.
      */
-    bool sign = std::signbit(x);
+    bool sign = signbit(x);
 
-    x = std::round(std::abs(x));
+    x = round(abs(x));
     return sign ? -x : x;
 }
 
 
 // Most of this is taken from zimg
 // https://github.com/sekrit-twc/zimg/blob/ce27c27f2147fbb28e417fbf19a95d3cf5d68f4f/src/zimg/resize/filter.cpp#L227
-static std::vector<double> scaling_weights(DescaleMode mode, int support, int src_dim, int dst_dim, double b, double c, double shift)
+static vector<double> scaling_weights(DescaleMode mode, int support, int src_dim, int dst_dim, double b, double c, double shift)
 {
     double ratio = static_cast<double>(dst_dim) / src_dim;
-    std::vector<double> weights (src_dim * dst_dim, 0);
+    vector<double> weights (src_dim * dst_dim, 0);
 
     for (int i = 0; i < dst_dim; ++i) {
 
@@ -394,7 +393,7 @@ static std::vector<double> scaling_weights(DescaleMode mode, int support, int sr
             if (xpos < 0.0)
                 real_pos = -xpos;
             else if (xpos >= src_dim)
-                real_pos = std::min(2.0 * src_dim - xpos, src_dim - 0.5);
+                real_pos = min(2.0 * src_dim - xpos, src_dim - 0.5);
             else
                 real_pos = xpos;
 
@@ -408,8 +407,8 @@ static std::vector<double> scaling_weights(DescaleMode mode, int support, int sr
 
 
 // Solve A' A x = A' b for x
-static void process_plane_h(int width, int current_height, int &current_width, int bandwidth, const std::vector<int> &weights_left_idx, const std::vector<int> &weights_right_idx, const std::vector<float> &weights,
-                            const std::vector<float> &lower, const std::vector<float> &upper, const std::vector<float> &diagonal, const int src_stride, const int dst_stride, const float *srcp, float *dstp)
+static void process_plane_h(int width, int current_height, int &current_width, int bandwidth, const vector<int> &weights_left_idx, const vector<int> &weights_right_idx, const vector<float> &weights,
+                            const vector<float> &lower, const vector<float> &upper, const vector<float> &diagonal, const int src_stride, const int dst_stride, const float *srcp, float *dstp)
 {
     int c = (bandwidth + 1) / 2;
     int columns = weights.size() / width;
@@ -418,7 +417,7 @@ static void process_plane_h(int width, int current_height, int &current_width, i
         // Solve LD y = A' b
         for (int j = 0; j < width; ++j) {
             float sum = 0.0;
-            int start = std::max(0, j - c + 1);
+            int start = max(0, j - c + 1);
 
             for (int k = weights_left_idx[j]; k < weights_right_idx[j]; ++k)
                 sum += weights[j * columns + k - weights_left_idx[j]] * srcp[k];
@@ -435,7 +434,7 @@ static void process_plane_h(int width, int current_height, int &current_width, i
         // Solve L' x = y
         for (int j = width - 2; j >= 0; --j) {
             float sum = 0.0;
-            int start = std::min(width - 1, j + c - 1);
+            int start = min(width - 1, j + c - 1);
 
             for (int k = start; k > j; --k) {
                 sum += upper[j * (c - 1) + k - start + c - 2] * dstp[k];
@@ -451,8 +450,8 @@ static void process_plane_h(int width, int current_height, int &current_width, i
 
 
 // Solve A' A x = A' b for x
-static void process_plane_v(int height, int current_width, int &current_height, int bandwidth, const std::vector<int> &weights_left_idx, const std::vector<int> &weights_right_idx, const std::vector<float> &weights,
-                            const std::vector<float> &lower, const std::vector<float> &upper, const std::vector<float> &diagonal, const int src_stride, const int dst_stride, const float *srcp, float *dstp)
+static void process_plane_v(int height, int current_width, int &current_height, int bandwidth, const vector<int> &weights_left_idx, const vector<int> &weights_right_idx, const vector<float> &weights,
+                            const vector<float> &lower, const vector<float> &upper, const vector<float> &diagonal, const int src_stride, const int dst_stride, const float *srcp, float *dstp)
 {
     int c = (bandwidth + 1) / 2;
     int columns = weights.size() / height;
@@ -461,7 +460,7 @@ static void process_plane_v(int height, int current_width, int &current_height, 
         // Solve LD y = A' b
         for (int j = 0; j < height; ++j) {
             float sum = 0.0;
-            int start = std::max(0, j - c + 1);
+            int start = max(0, j - c + 1);
 
             for (int k = weights_left_idx[j]; k < weights_right_idx[j]; ++k)
                 sum += weights[j * columns + k - weights_left_idx[j]] * srcp[k * src_stride + i];
@@ -478,7 +477,7 @@ static void process_plane_v(int height, int current_width, int &current_height, 
         // Solve L' x = y
         for (int j = height - 2; j >= 0; --j) {
             float sum = 0.0;
-            int start = std::min(height - 1, j + c - 1);
+            int start = min(height - 1, j + c - 1);
 
             for (int k = start; k > j; --k) {
                 sum += upper[j * (c - 1) + k - start + c - 2] * dstp[k * dst_stride + i];
@@ -503,14 +502,14 @@ Matrix* genMatrix(DescaleData *d, int res, float shift){
     }
     auto matrix = new Matrix;
     if(d->cacheMap.size() == d->maxCacheSize) {
-        long k = d->cacheList->get_rear_page()->key;
+        long k = d->cacheList->get_back_page()->key;
         d->cacheMap.erase(k);
-        d->cacheList->remove_rear_page();
+        d->cacheList->remove_back_page();
     }
     Node *page = d->cacheList->add_page_to_head(key, matrix);
     d->cacheMap[key] = page;
-    std::vector<double> weights = scaling_weights(d->mode, d->support, d->vi_dst.width, res, d->b, d->c, shift);
-    std::vector<double> transposed_weights = transpose_matrix(res, weights);
+    vector<double> weights = scaling_weights(d->mode, d->support, d->vi_dst.width, res, d->b, d->c, shift);
+    vector<double> transposed_weights = transpose_matrix(res, weights);
 
     matrix->weights_left_idx.resize(d->vi_dst.width);
     matrix->weights_right_idx.resize(d->vi_dst.width);
@@ -529,13 +528,13 @@ Matrix* genMatrix(DescaleData *d, int res, float shift){
         }
     }
 
-    std::vector<double> multiplied_weights = multiply_sparse_matrices(d->vi_dst.width, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights, weights);
+    vector<double> multiplied_weights = multiply_sparse_matrices(d->vi_dst.width, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights, weights);
 
-    std::vector<double> upper (d->vi_dst.width * d->vi_dst.width, 0);
+    vector<double> upper (d->vi_dst.width * d->vi_dst.width, 0);
     upper = compress_symmetric_banded_matrix(d->vi_dst.width, d->bandwidth, multiplied_weights);
     banded_ldlt_decomposition(d->vi_dst.width, d->bandwidth, upper);
     upper = uncrompress_symmetric_banded_matrix(d->vi_dst.width, d->bandwidth, upper);
-    std::vector<double> lower = transpose_matrix(d->vi_dst.width, upper);
+    vector<double> lower = transpose_matrix(d->vi_dst.width, upper);
     multiply_banded_matrix_with_diagonal(d->vi_dst.width, d->bandwidth, lower);
 
     transposed_weights = compress_matrix(d->vi_dst.width, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights);
@@ -668,7 +667,7 @@ static void VS_CC descale_free(void *instanceData, VSCore *core, const VSAPI *vs
 
 static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi)
 {
-    auto mode = static_cast<DescaleMode>(reinterpret_cast<std::uintptr_t>(userData));
+    auto mode = static_cast<DescaleMode>(reinterpret_cast<uintptr_t>(userData));
 
     DescaleData d{};
 
@@ -714,7 +713,7 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
     if (err)
         d.shift_v = 0;
 
-    std::string funcname;
+    string funcname;
 
     if (mode == bilinear) {
         d.support = 1;

@@ -41,16 +41,19 @@ struct Matrix {
 };
 
 struct Node {
-    long long key;
+    uint64_t key;
     Matrix* value;
     Node *prev, *next;
+//    Node(uint64_t, Matrix*) = default;
 };
 
 class DoublyLinkedList {
     Node *front, *back;
+    mutex list_lock;
 public:
-    Node* add_page_to_head(long long key, Matrix* value) {
+    Node* add_page_to_head(uint64_t key, Matrix* value) {
         auto *page = new Node{key, value};
+        lock_guard<mutex>lock(list_lock);
         if(!front && !back) {
             front = back = page;
         }
@@ -66,6 +69,7 @@ public:
         if(page==front) {
             return;
         }
+        lock_guard<mutex>lock(list_lock);
         if(page == back) {
             back = back->prev;
             back->next = nullptr;
@@ -85,6 +89,7 @@ public:
         if(back == nullptr) {
             return;
         }
+        lock_guard<mutex>lock(list_lock);
         if(front == back) {
             delete back;
             front = back = nullptr;
@@ -97,9 +102,9 @@ public:
         }
     }
     Node* get_back_page() {
+        lock_guard<mutex>lock(list_lock);
         return back;
     }
-
 };
 
 struct DescaleData
@@ -116,7 +121,7 @@ struct DescaleData
     int maxCacheSize;
     mutex cache_lock;
     DoublyLinkedList *cacheList;
-    unordered_map<long long, Node*> cacheMap;
+    unordered_map<uint64_t, Node*> cacheMap;
 };
 
 
@@ -486,26 +491,32 @@ static void process_plane_v(int height, int current_width, int &current_height, 
 }
 
 
-
 Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
-    long long key = (src_res << sizeof(long)) + (dst_res << sizeof(int)) + reinterpret_cast<int &>(shift);
+    uint64_t key = (src_res << 16) + dst_res;
+    key <<= 32;
+    key += reinterpret_cast<unsigned int &>(shift);
 
-    d->cache_lock.lock();
-    auto node = d->cacheMap[key];
+    Node* node = d->cacheMap[key];
+
     if (node) {
         d->cacheList->move_page_to_head(node);
-        d->cache_lock.unlock();
+        return node->value;
+    }
+    lock_guard<mutex>lock(d->cache_lock);
+    node = d->cacheMap[key];
+
+    if (node) {
+        d->cacheList->move_page_to_head(node);
         return node->value;
     }
     auto matrix = new Matrix;
     if(d->cacheMap.size() == d->maxCacheSize) {
-        long long k = d->cacheList->get_back_page()->key;
+        uint64_t k = d->cacheList->get_back_page()->key;
         d->cacheMap.erase(k);
         d->cacheList->remove_back_page();
     }
     Node *page = d->cacheList->add_page_to_head(key, matrix);
     d->cacheMap[key] = page;
-    d->cache_lock.unlock();
 
     vector<double> weights = scaling_weights(d->mode, d->support, dst_res, src_res, d->b, d->c, shift);
     vector<double> transposed_weights = transpose_matrix(src_res, weights);
@@ -676,12 +687,12 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
     auto d = new DescaleData;
 
     d->cacheList = new DoublyLinkedList();
-    d->cacheMap = unordered_map<long long, Node*>();
+    d->cacheMap = unordered_map<uint64_t, Node*>();
     d->mode = mode;
     d->node = vsapi->propGetNode(in, "src", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
     d->vi_dst = *vsapi->getVideoInfo(d->node);
-    int err;
+    int err = 0;
 
     if (!isConstantFormat(&d->vi) || (d->vi.format->id != pfGrayS && d->vi.format->id != pfRGBS && d->vi.format->id != pfYUV444PS)) {
         vsapi->setError(out, "Descale: Constant format GrayS, RGBS, and YUV444PS are the only supported input formats.");

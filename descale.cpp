@@ -44,7 +44,6 @@ struct Node {
     uint64_t key;
     Matrix* value;
     Node *prev, *next;
-//    Node(uint64_t, Matrix*) = default;
 };
 
 class DoublyLinkedList {
@@ -692,7 +691,7 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
     d->node = vsapi->propGetNode(in, "src", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
     d->vi_dst = *vsapi->getVideoInfo(d->node);
-    int err = 0;
+    int err;
 
     if (!isConstantFormat(&d->vi) || (d->vi.format->id != pfGrayS && d->vi.format->id != pfRGBS && d->vi.format->id != pfYUV444PS)) {
         vsapi->setError(out, "Descale: Constant format GrayS, RGBS, and YUV444PS are the only supported input formats.");
@@ -718,7 +717,7 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 
     d->maxCacheSize = static_cast<int>(vsapi->propGetInt(in, "cache_size", 0, &err));
     if (err || d->maxCacheSize < 1)
-        d->maxCacheSize = 100;
+        d->maxCacheSize = 5;
 
     d->shift_h = static_cast<float>(vsapi->propGetFloat(in, "src_left", 0, &err));
     if (err)

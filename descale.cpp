@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <mutex>
 #include "vapoursynth/VapourSynth.h"
 #include "vapoursynth/VSHelper.h"
 
@@ -113,6 +114,7 @@ struct DescaleData
     double b, c;
     float shift_h, shift_v;
     int maxCacheSize;
+    mutex cache_lock;
     DoublyLinkedList *cacheList;
     unordered_map<long long, Node*> cacheMap;
 };
@@ -488,9 +490,11 @@ static void process_plane_v(int height, int current_width, int &current_height, 
 Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
     long long key = (src_res << sizeof(long)) + (dst_res << sizeof(int)) + reinterpret_cast<int &>(shift);
 
+    d->cache_lock.lock();
     auto node = d->cacheMap[key];
     if (node) {
         d->cacheList->move_page_to_head(node);
+        d->cache_lock.unlock();
         return node->value;
     }
     auto matrix = new Matrix;
@@ -501,6 +505,8 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
     }
     Node *page = d->cacheList->add_page_to_head(key, matrix);
     d->cacheMap[key] = page;
+    d->cache_lock.unlock();
+
     vector<double> weights = scaling_weights(d->mode, d->support, dst_res, src_res, d->b, d->c, shift);
     vector<double> transposed_weights = transpose_matrix(src_res, weights);
 
@@ -528,6 +534,7 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
     upper = compress_symmetric_banded_matrix(dst_res, d->bandwidth, multiplied_weights);
     banded_ldlt_decomposition(dst_res, d->bandwidth, upper);
     upper = uncrompress_symmetric_banded_matrix(dst_res, d->bandwidth, upper);
+
     vector<double> lower = transpose_matrix(dst_res, upper);
     multiply_banded_matrix_with_diagonal(dst_res, d->bandwidth, lower);
 
@@ -665,95 +672,95 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 {
     auto mode = static_cast<DescaleMode>(reinterpret_cast<uintptr_t>(userData));
 
-    DescaleData d{};
+//    DescaleData d{};
+    auto d = new DescaleData;
 
-    d.cacheList = new DoublyLinkedList();
-    d.cacheMap = unordered_map<long long, Node*>();
-    d.mode = mode;
-    d.node = vsapi->propGetNode(in, "src", 0, nullptr);
-    d.vi = *vsapi->getVideoInfo(d.node);
-    d.vi_dst = *vsapi->getVideoInfo(d.node);
+    d->cacheList = new DoublyLinkedList();
+    d->cacheMap = unordered_map<long long, Node*>();
+    d->mode = mode;
+    d->node = vsapi->propGetNode(in, "src", 0, nullptr);
+    d->vi = *vsapi->getVideoInfo(d->node);
+    d->vi_dst = *vsapi->getVideoInfo(d->node);
     int err;
 
-    if (!isConstantFormat(&d.vi) || (d.vi.format->id != pfGrayS && d.vi.format->id != pfRGBS && d.vi.format->id != pfYUV444PS)) {
+    if (!isConstantFormat(&d->vi) || (d->vi.format->id != pfGrayS && d->vi.format->id != pfRGBS && d->vi.format->id != pfYUV444PS)) {
         vsapi->setError(out, "Descale: Constant format GrayS, RGBS, and YUV444PS are the only supported input formats.");
-        vsapi->freeNode(d.node);
+        vsapi->freeNode(d->node);
         return;
     }
 
-    d.vi_dst.width = static_cast<int>(vsapi->propGetInt(in, "width", 0, nullptr));
-    d.vi_dst.height = static_cast<int>(vsapi->propGetInt(in, "height", 0, nullptr));
+    d->vi_dst.width = static_cast<int>(vsapi->propGetInt(in, "width", 0, nullptr));
+    d->vi_dst.height = static_cast<int>(vsapi->propGetInt(in, "height", 0, nullptr));
 
-    if (d.vi_dst.width < 1 || d.vi_dst.height < 1) {
+    if (d->vi_dst.width < 1 || d->vi_dst.height < 1) {
         vsapi->setError(out, "Descale: width and height must be bigger than 0.");
-        vsapi->freeNode(d.node);
+        vsapi->freeNode(d->node);
         return;
     }
 
-    if (d.vi_dst.width > d.vi.width || d.vi_dst.height > d.vi.height) {
+    if (d->vi_dst.width > d->vi.width || d->vi_dst.height > d->vi.height) {
         vsapi->setError(out, "Descale: Output dimension has to be smaller than or equal to input dimension.");
-        vsapi->freeNode(d.node);
+        vsapi->freeNode(d->node);
         return;
     }
 
 
-    d.maxCacheSize = static_cast<int>(vsapi->propGetInt(in, "cache_size", 0, &err));
-    if (err || d.maxCacheSize < 1)
-        d.maxCacheSize = 100;
+    d->maxCacheSize = static_cast<int>(vsapi->propGetInt(in, "cache_size", 0, &err));
+    if (err || d->maxCacheSize < 1)
+        d->maxCacheSize = 100;
 
-    d.shift_h = static_cast<float>(vsapi->propGetFloat(in, "src_left", 0, &err));
+    d->shift_h = static_cast<float>(vsapi->propGetFloat(in, "src_left", 0, &err));
     if (err)
-        d.shift_h = 0;
+        d->shift_h = 0;
 
-    d.shift_v = static_cast<float>(vsapi->propGetFloat(in, "src_top", 0, &err));
+    d->shift_v = static_cast<float>(vsapi->propGetFloat(in, "src_top", 0, &err));
     if (err)
-        d.shift_v = 0;
+        d->shift_v = 0;
 
     string funcname;
 
     if (mode == bilinear) {
-        d.support = 1;
+        d->support = 1;
         funcname = "Debilinear";
 
     } else if (mode == bicubic) {
-        d.b = vsapi->propGetFloat(in, "b", 0, &err);
+        d->b = vsapi->propGetFloat(in, "b", 0, &err);
         if (err)
-            d.b = 1. / 3.;
+            d->b = 1. / 3.;
 
-        d.c = vsapi->propGetFloat(in, "c", 0, &err);
+        d->c = vsapi->propGetFloat(in, "c", 0, &err);
         if (err)
-            d.c = 1. / 3.;
+            d->c = 1. / 3.;
 
-        d.support = 3;
+        d->support = 3;
         funcname = "Debicubic";
 
     } else if (mode == lanczos) {
-        d.taps = static_cast<int>(vsapi->propGetInt(in, "taps", 0, &err));
+        d->taps = static_cast<int>(vsapi->propGetInt(in, "taps", 0, &err));
         if (err)
-            d.taps = 3;
+            d->taps = 3;
 
-        if (d.taps < 1) {
+        if (d->taps < 1) {
             vsapi->setError(out, "Descale: taps must be bigger than 0.");
-            vsapi->freeNode(d.node);
+            vsapi->freeNode(d->node);
             return;
         }
-        d.support = d.taps;
+        d->support = d->taps;
         funcname = "Delanczos";
 
     } else if (mode == spline16) {
-        d.support = 2;
+        d->support = 2;
         funcname = "Despline16";
 
     } else {
         //  if (mode == spline36)
-        d.support = 3;
+        d->support = 3;
         funcname = "Despline36";
     }
 
-    d.bandwidth = d.support * 4 - 1;
+    d->bandwidth = d->support * 4 - 1;
 
-    auto * data = new DescaleData{ d };
-    vsapi->createFilter(in, out, funcname.c_str(), descale_init, descale_get_frame, descale_free, fmParallel, 0, data, core);
+    vsapi->createFilter(in, out, funcname.c_str(), descale_init, descale_get_frame, descale_free, fmParallel, 0, d, core);
 }
 
 

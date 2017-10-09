@@ -509,13 +509,6 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
         return node->value;
     }
     auto matrix = new Matrix;
-    if(d->cacheMap.size() == d->maxCacheSize) {
-        uint64_t k = d->cacheList->get_back_page()->key;
-        d->cacheMap.erase(k);
-        d->cacheList->remove_back_page();
-    }
-    Node *page = d->cacheList->add_page_to_head(key, matrix);
-    d->cacheMap[key] = page;
 
     vector<double> weights = scaling_weights(d->mode, d->support, dst_res, src_res, d->b, d->c, shift);
     vector<double> transposed_weights = transpose_matrix(src_res, weights);
@@ -562,6 +555,15 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
             matrix->weights[i * compressed_columns + j] = static_cast<float>(transposed_weights[i * compressed_columns + j]);
         }
     }
+
+    if(d->cacheMap.size() == d->maxCacheSize) {
+        uint64_t k = d->cacheList->get_back_page()->key;
+        d->cacheMap.erase(k);
+        d->cacheList->remove_back_page();
+    }
+    Node *page = d->cacheList->add_page_to_head(key, matrix);
+    d->cacheMap[key] = page;
+
     return matrix;
 }
 

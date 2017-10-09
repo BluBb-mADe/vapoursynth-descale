@@ -8,17 +8,20 @@ The plugin itself only supports GrayS, RGBS, and YUV444PS input.
 The included python wrapper supports YUV (every subsampling), Gray, and RGB of every bitdepth.
 
 ```
-descale.Debilinear(clip src, int width, int height, float src_left=0.0, float src_top=0.0)
+descale.Debilinear(clip src, int width, int height, float src_left=0.0, float src_top=0.0, cache_size=5)
 
-descale.Debicubic(clip src, int width, int height, float b=1/3, float c=1/3, float src_left=0.0, float src_top=0.0)
+descale.Debicubic(clip src, int width, int height, float b=1/3, float c=1/3, float src_left=0.0, float src_top=0.0, cache_size=5)
 
-descale.Delanczos(clip src, int width, int height, int taps=3, float src_left=0.0, float src_top=0.0)
+descale.Delanczos(clip src, int width, int height, int taps=3, float src_left=0.0, float src_top=0.0, cache_size=5)
 
-descale.Despline16(clip src, int width, int height, float src_left=0.0, float src_top=0.0)
+descale.Despline16(clip src, int width, int height, float src_left=0.0, float src_top=0.0, cache_size=5)
 
-descale.Despline36(clip src, int width, int height, float src_left=0.0, float src_top=0.0)
+descale.Despline36(clip src, int width, int height, float src_left=0.0, float src_top=0.0, cache_size=5)
+
+descale.Despline36(clip src, int width, int height, int kernel="bilinear" float src_left=0.0, float src_top=0.0, int cache_size=5)
 ```
-
+`cache_size` specifies how many matrices wil be cached.
+<br>This is only relevant for variable frame-size clips.
 ## How does this work?
 
 Resampling can be described as `A x = b`.
@@ -40,10 +43,12 @@ We now have the original vector `x`.
 
 ### Linux
 ```
-g++ -std=c++11 -shared -fPIC -O2 descale.cpp -o libdescale.so
+g++ -std=c++17 -shared -fPIC -O2 descale.cpp -o libdescale.so
 ```
 
 ### Cross-compilation for Windows
 ```
-x86_64-w64-mingw32-g++ -std=c++11 -shared -fPIC -O2 descale.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -s -o libdescale.dll
+x86_64-w64-mingw32-g++ -std=c++17 -shared -fPIC -O2 descale.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -s -o libdescale.dll
 ```
+
+Note: `-O2` actually performs better than `-O3` or `-Ofast` in windows benchmarks.

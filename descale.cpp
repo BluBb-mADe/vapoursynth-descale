@@ -15,6 +15,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <shared_mutex>
 #include "vapoursynth/VapourSynth.h"
 #include "vapoursynth/VSHelper.h"
 
@@ -38,6 +39,7 @@ struct Matrix {
     vector<float> weights;
     vector<int> weights_left_idx;
     vector<int> weights_right_idx;
+    shared_mutex lock;
 };
 
 struct Node {
@@ -118,7 +120,7 @@ struct DescaleData
     double b, c;
     float shift_h, shift_v;
     int maxCacheSize;
-    mutex cache_lock;
+    shared_mutex cache_lock;
     DoublyLinkedList *cacheList;
     unordered_map<uint64_t, Node*> cacheMap;
 };
@@ -495,20 +497,37 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
     key <<= 32;
     key += reinterpret_cast<unsigned int &>(shift);
 
+    d->cache_lock.lock_shared();
     Node* node = d->cacheMap[key];
+    d->cache_lock.unlock_shared();
 
     if (node) {
+        node->value->lock.lock_shared();
+        node->value->lock.unlock_shared();
         d->cacheList->move_page_to_head(node);
         return node->value;
     }
-    lock_guard<mutex>lock(d->cache_lock);
+
+    d->cache_lock.lock();
     node = d->cacheMap[key];
-
     if (node) {
+        d->cache_lock.unlock();
+        node->value->lock.lock_shared();
+        node->value->lock.unlock_shared();
         d->cacheList->move_page_to_head(node);
         return node->value;
     }
+
     auto matrix = new Matrix;
+    lock_guard<shared_mutex>lock(matrix->lock);
+    if(d->cacheMap.size() == d->maxCacheSize) {
+        uint64_t k = d->cacheList->get_back_page()->key;
+        d->cacheMap.erase(k);
+        d->cacheList->remove_back_page();
+    }
+    Node *page = d->cacheList->add_page_to_head(key, matrix);
+    d->cacheMap[key] = page;
+    d->cache_lock.unlock();
 
     vector<double> weights = scaling_weights(d->mode, d->support, dst_res, src_res, d->b, d->c, shift);
     vector<double> transposed_weights = transpose_matrix(src_res, weights);
@@ -555,15 +574,6 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
             matrix->weights[i * compressed_columns + j] = static_cast<float>(transposed_weights[i * compressed_columns + j]);
         }
     }
-
-    if(d->cacheMap.size() == d->maxCacheSize) {
-        uint64_t k = d->cacheList->get_back_page()->key;
-        d->cacheMap.erase(k);
-        d->cacheList->remove_back_page();
-    }
-    Node *page = d->cacheList->add_page_to_head(key, matrix);
-    d->cacheMap[key] = page;
-
     return matrix;
 }
 

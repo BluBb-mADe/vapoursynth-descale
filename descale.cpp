@@ -40,6 +40,7 @@ struct Matrix {
     vector<int> weights_left_idx;
     vector<int> weights_right_idx;
     shared_mutex lock;
+    bool ready=false;
 };
 
 struct Node {
@@ -67,10 +68,10 @@ public:
     }
 
     void move_page_to_head(Node *page) {
+        lock_guard<mutex>lock(list_lock);
         if(page==front) {
             return;
         }
-        lock_guard<mutex>lock(list_lock);
         if(page == back) {
             back = back->prev;
             back->next = nullptr;
@@ -86,26 +87,27 @@ public:
         front = page;
     }
 
-    void remove_back_page() {
-        if(back == nullptr) {
-            return;
-        }
+    uint64_t remove_back_page() {
+        uint64_t k = 0;
         lock_guard<mutex>lock(list_lock);
         if(front == back) {
+            k = back->key;
             delete back;
             front = back = nullptr;
         }
         else {
-            Node *temp = back;
+//            Node *temp = back;
+            k = back->key;
+            delete back;
             back = back->prev;
             back->next = nullptr;
-            delete temp;
         }
+        return k;
     }
-    Node* get_back_page() {
-        lock_guard<mutex>lock(list_lock);
-        return back;
-    }
+//    Node* get_back_page() {
+//        lock_guard<mutex>lock(list_lock);
+//        return back;
+//    }
 };
 
 struct DescaleData
@@ -493,40 +495,50 @@ static void process_plane_v(int height, int current_width, int &current_height, 
 
 
 Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
+    // merge all relevant information into a unique key
     uint64_t key = (src_res << 16) + dst_res;
     key <<= 32;
     key += reinterpret_cast<unsigned int &>(shift);
 
+    // fast-path check if matrix for this key already exists
     d->cache_lock.lock_shared();
-    Node* node = d->cacheMap[key];
+    auto n = d->cacheMap.find(key);
     d->cache_lock.unlock_shared();
-
-    if (node) {
-        node->value->lock.lock_shared();
-        node->value->lock.unlock_shared();
-        d->cacheList->move_page_to_head(node);
-        return node->value;
+    if (n != d->cacheMap.end()) {
+        // check the fast-path bool first
+        if(!n->second->value->ready){
+            // wait for the matrix to be generated
+            n->second->value->lock.lock_shared();
+            n->second->value->lock.unlock_shared();
+        }
+        d->cacheList->move_page_to_head(n->second);
+        return n->second->value;
     }
-
+    // synchronized check if matrix for this key already exists
     d->cache_lock.lock();
-    node = d->cacheMap[key];
-    if (node) {
+    n = d->cacheMap.find(key);
+    if (n != d->cacheMap.end()) {
         d->cache_lock.unlock();
-        node->value->lock.lock_shared();
-        node->value->lock.unlock_shared();
-        d->cacheList->move_page_to_head(node);
-        return node->value;
+        // check the fast-path bool first
+        if(!n->second->value->ready){
+            // wait for the matrix to be generated
+            n->second->value->lock.lock_shared();
+            n->second->value->lock.unlock_shared();
+        }
+        d->cacheList->move_page_to_head(n->second);
+        return n->second->value;
     }
-
+    // generate new matrix for given parameters
     auto matrix = new Matrix;
-    lock_guard<shared_mutex>lock(matrix->lock);
+    // lock the matrix-specific mutex
+    matrix->lock.lock();
     if(d->cacheMap.size() == d->maxCacheSize) {
-        uint64_t k = d->cacheList->get_back_page()->key;
+        // there can only be at least one element in the cacheList
+        uint64_t k = d->cacheList->remove_back_page();
         d->cacheMap.erase(k);
-        d->cacheList->remove_back_page();
     }
-    Node *page = d->cacheList->add_page_to_head(key, matrix);
-    d->cacheMap[key] = page;
+    d->cacheMap[key] = d->cacheList->add_page_to_head(key, matrix);
+    // unlock the global lock so the matrix generation doesn't block the whole filter
     d->cache_lock.unlock();
 
     vector<double> weights = scaling_weights(d->mode, d->support, dst_res, src_res, d->b, d->c, shift);
@@ -574,6 +586,9 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
             matrix->weights[i * compressed_columns + j] = static_cast<float>(transposed_weights[i * compressed_columns + j]);
         }
     }
+
+    matrix->ready = true;
+    matrix->lock.unlock();
     return matrix;
 }
 
@@ -682,10 +697,12 @@ static void VS_CC descale_free(void *instanceData, VSCore *core, const VSAPI *vs
     vsapi->freeNode(d->node);
 
     delete d->cacheList;
+
     for(auto & it : d->cacheMap){
         delete it.second->value;
         delete it.second;
     }
+
     delete d;
 }
 
@@ -694,7 +711,6 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 {
     auto mode = static_cast<DescaleMode>(reinterpret_cast<uintptr_t>(userData));
 
-//    DescaleData d{};
     auto d = new DescaleData;
 
     d->cacheList = new DoublyLinkedList();

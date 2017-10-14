@@ -20,8 +20,8 @@ descale.Despline36(clip src, int width, int height, float src_left=0.0, float sr
 
 descale.Despline36(clip src, int width, int height, int kernel="bilinear" float src_left=0.0, float src_top=0.0, int cache_size=5)
 ```
-`cache_size` specifies how many matrices wil be cached.
-<br>This is only relevant for variable frame-size clips.
+`cache_size` matrix cache size. smallest reasonable value is 2. values above are only useful for variable frame-size clips.
+
 ## How does this work?
 
 Resampling can be described as `A x = b`.
@@ -50,5 +50,4 @@ g++ -std=c++17 -shared -fPIC -O2 descale.cpp -o libdescale.so
 ```
 x86_64-w64-mingw32-g++ -std=c++17 -shared -fPIC -O2 descale.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -s -o libdescale.dll
 ```
-
-Note: `-O2` actually performs better than `-O3` or `-Ofast` in windows benchmarks.
+(I couldn't spot any problems with higher optimization settings but it seems to actually perform worse on some systems.)

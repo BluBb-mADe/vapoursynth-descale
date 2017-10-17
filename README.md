@@ -7,7 +7,7 @@ VapourSynth plugin to undo upscaling.
 The plugin itself only supports GrayS, RGBS, and YUV444PS input.
 The included python wrapper supports YUV (every subsampling), Gray, and RGB of every bitdepth.
 
-#####Descalers:
+##### Descalers:
 ```
 descale.Debilinear(clip src, int width, int height, float src_left=0.0, float src_top=0.0)
 
@@ -21,7 +21,7 @@ descale.Despline36(clip src, int width, int height, float src_left=0.0, float sr
 
 descale.Despline36(clip src, int width, int height, int kernel="bilinear" float src_left=0.0, float src_top=0.0)
 ```
-#####CacheSize:
+##### CacheSize:
 `descale.CacheSize(int size=-1)` changes the internal size of the matrix lru cache. -1 means no limit.
  
 

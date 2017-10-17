@@ -532,7 +532,7 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
     auto matrix = new Matrix;
     // lock the matrix-specific mutex
     matrix->lock.lock();
-    while(max_cache_size != -1 && cacheMap.size() > max_cache_size) {
+    if(cacheMap.size() > max_cache_size && max_cache_size != -1) {
         // there can only be at least one element in the cacheList
         uint64_t k = cacheList.remove_back_page();
         cacheMap.erase(k);

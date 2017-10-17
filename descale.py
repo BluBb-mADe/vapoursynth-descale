@@ -4,7 +4,7 @@ from functools import partial
 
 # If yuv444 is True chroma will be upscaled instead of downscaled
 # If gray is True the output will be grayscale
-def Descale(src, width, height, kernel='bilinear', b=1/3, c=1/3, taps=3, yuv444=False, gray=False, chromaloc=None, cache_size=5):
+def Descale(src, width, height, kernel='bilinear', b=1/3, c=1/3, taps=3, yuv444=False, gray=False, chromaloc=None):
     src_f = src.format
     src_cf = src_f.color_family
     src_st = src_f.sample_type
@@ -15,10 +15,10 @@ def Descale(src, width, height, kernel='bilinear', b=1/3, c=1/3, taps=3, yuv444=
     descale_filter = get_filter(kernel, b, c, taps)
 
     if src_cf == RGB and not gray:
-        rgb = descale_filter(src.resize.Point(format=RGBS), width, height, cache_size=cache_size)
+        rgb = descale_filter(src.resize.Point(format=RGBS), width, height)
         return rgb.resize.Point(format=src_f.id)
 
-    y = descale_filter(src.resize.Point(format=GRAYS), width, height, cache_size=cache_size)
+    y = descale_filter(src.resize.Point(format=GRAYS), width, height)
     y_f = core.register_format(GRAY, src_st, src_bits, 0, 0)
     y = y.resize.Point(format=y_f.id)
 

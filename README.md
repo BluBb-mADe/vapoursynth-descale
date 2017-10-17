@@ -7,21 +7,24 @@ VapourSynth plugin to undo upscaling.
 The plugin itself only supports GrayS, RGBS, and YUV444PS input.
 The included python wrapper supports YUV (every subsampling), Gray, and RGB of every bitdepth.
 
+#####Descalers:
 ```
-descale.Debilinear(clip src, int width, int height, float src_left=0.0, float src_top=0.0, cache_size=5)
+descale.Debilinear(clip src, int width, int height, float src_left=0.0, float src_top=0.0)
 
-descale.Debicubic(clip src, int width, int height, float b=1/3, float c=1/3, float src_left=0.0, float src_top=0.0, cache_size=5)
+descale.Debicubic(clip src, int width, int height, float b=1/3, float c=1/3, float src_left=0.0, float src_top=0.0)
 
-descale.Delanczos(clip src, int width, int height, int taps=3, float src_left=0.0, float src_top=0.0, cache_size=5)
+descale.Delanczos(clip src, int width, int height, int taps=3, float src_left=0.0, float src_top=0.0)
 
-descale.Despline16(clip src, int width, int height, float src_left=0.0, float src_top=0.0, cache_size=5)
+descale.Despline16(clip src, int width, int height, float src_left=0.0, float src_top=0.0)
 
-descale.Despline36(clip src, int width, int height, float src_left=0.0, float src_top=0.0, cache_size=5)
+descale.Despline36(clip src, int width, int height, float src_left=0.0, float src_top=0.0)
 
-descale.Despline36(clip src, int width, int height, int kernel="bilinear" float src_left=0.0, float src_top=0.0, int cache_size=5)
+descale.Despline36(clip src, int width, int height, int kernel="bilinear" float src_left=0.0, float src_top=0.0)
 ```
-`cache_size` specifies how many matrices wil be cached.
-<br>This is only relevant for variable frame-size clips.
+#####CacheSize:
+`descale.CacheSize(int size=-1)` changes the internal size of the matrix lru cache. -1 means no limit.
+ 
+
 ## How does this work?
 
 Resampling can be described as `A x = b`.

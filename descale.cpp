@@ -50,9 +50,9 @@ struct Node {
 };
 
 class DoublyLinkedList {
+public:
     Node *front, *back;
     mutex list_lock;
-public:
     Node* add_page_to_head(uint64_t key, Matrix* value) {
         auto *page = new Node{key, value};
         lock_guard<mutex>lock(list_lock);
@@ -96,7 +96,6 @@ public:
             front = back = nullptr;
         }
         else {
-//            Node *temp = back;
             k = back->key;
             delete back;
             back = back->prev;
@@ -104,11 +103,12 @@ public:
         }
         return k;
     }
-//    Node* get_back_page() {
-//        lock_guard<mutex>lock(list_lock);
-//        return back;
-//    }
 };
+
+int max_cache_size = -1;
+DoublyLinkedList cacheList;
+unordered_map<uint64_t, Node*> cacheMap = unordered_map<uint64_t, Node*>();
+shared_mutex cache_lock;
 
 struct DescaleData
 {
@@ -121,10 +121,6 @@ struct DescaleData
     int taps;
     double b, c;
     float shift_h, shift_v;
-    int maxCacheSize;
-    shared_mutex cache_lock;
-    DoublyLinkedList *cacheList;
-    unordered_map<uint64_t, Node*> cacheMap;
 };
 
 
@@ -493,6 +489,10 @@ static void process_plane_v(int height, int current_width, int &current_height, 
     current_height = height;
 }
 
+static void descale_cleanup(DescaleData *d, const VSAPI *vsapi){
+    vsapi->freeNode(d->node);
+    delete d;
+}
 
 Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
     // merge all relevant information into a unique key
@@ -501,45 +501,45 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
     key += reinterpret_cast<unsigned int &>(shift);
 
     // fast-path check if matrix for this key already exists
-    d->cache_lock.lock_shared();
-    auto n = d->cacheMap.find(key);
-    d->cache_lock.unlock_shared();
-    if (n != d->cacheMap.end()) {
+    cache_lock.lock_shared();
+    auto n = cacheMap.find(key);
+    cache_lock.unlock_shared();
+    if (n != cacheMap.end()) {
         // check the fast-path bool first
         if(!n->second->value->ready){
             // wait for the matrix to be generated
             n->second->value->lock.lock_shared();
             n->second->value->lock.unlock_shared();
         }
-        d->cacheList->move_page_to_head(n->second);
+        cacheList.move_page_to_head(n->second);
         return n->second->value;
     }
     // synchronized check if matrix for this key already exists
-    d->cache_lock.lock();
-    n = d->cacheMap.find(key);
-    if (n != d->cacheMap.end()) {
-        d->cache_lock.unlock();
+    cache_lock.lock();
+    n = cacheMap.find(key);
+    if (n != cacheMap.end()) {
+        cache_lock.unlock();
         // check the fast-path bool first
         if(!n->second->value->ready){
             // wait for the matrix to be generated
             n->second->value->lock.lock_shared();
             n->second->value->lock.unlock_shared();
         }
-        d->cacheList->move_page_to_head(n->second);
+        cacheList.move_page_to_head(n->second);
         return n->second->value;
     }
     // generate new matrix for given parameters
     auto matrix = new Matrix;
     // lock the matrix-specific mutex
     matrix->lock.lock();
-    if(d->cacheMap.size() == d->maxCacheSize) {
+    while(max_cache_size != -1 && cacheMap.size() > max_cache_size) {
         // there can only be at least one element in the cacheList
-        uint64_t k = d->cacheList->remove_back_page();
-        d->cacheMap.erase(k);
+        uint64_t k = cacheList.remove_back_page();
+        cacheMap.erase(k);
     }
-    d->cacheMap[key] = d->cacheList->add_page_to_head(key, matrix);
+    cacheMap[key] = cacheList.add_page_to_head(key, matrix);
     // unlock the global lock so the matrix generation doesn't block the whole filter
-    d->cache_lock.unlock();
+    cache_lock.unlock();
 
     vector<double> weights = scaling_weights(d->mode, d->support, dst_res, src_res, d->b, d->c, shift);
     vector<double> transposed_weights = transpose_matrix(src_res, weights);
@@ -682,28 +682,35 @@ static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, vo
     return nullptr;
 }
 
-
 static void VS_CC descale_init(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi)
 {
     auto * d = static_cast<DescaleData *>(*instanceData);
     vsapi->setVideoInfo(&d->vi_dst, 1, node);
 }
 
-
 static void VS_CC descale_free(void *instanceData, VSCore *core, const VSAPI *vsapi)
 {
-    auto * d = static_cast<DescaleData *>(instanceData);
+    descale_cleanup(static_cast<DescaleData *>(instanceData), vsapi);
+}
 
-    vsapi->freeNode(d->node);
-
-    delete d->cacheList;
-
-    for(auto & it : d->cacheMap){
-        delete it.second->value;
-        delete it.second;
+static void VS_CC descale_change_cache_size(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi)
+{
+    int err;
+    auto size = static_cast<int>(vsapi->propGetInt(in, "size", 0, &err));
+    if(err){
+        vsapi->setError(out, "Descale: Invalid cache size.");
+        return;
     }
-
-    delete d;
+    if (size == 0 )
+        size = 1;
+    lock_guard<shared_mutex>lock(cache_lock);
+    max_cache_size = size;
+    if (size <= -1)
+        return;
+    while(cacheMap.size() > size) {
+        uint64_t k = cacheList.remove_back_page();
+        cacheMap.erase(k);
+    }
 }
 
 
@@ -713,8 +720,6 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 
     auto d = new DescaleData;
 
-    d->cacheList = new DoublyLinkedList();
-    d->cacheMap = unordered_map<uint64_t, Node*>();
     d->mode = mode;
     d->node = vsapi->propGetNode(in, "src", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
@@ -723,7 +728,7 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 
     if (!isConstantFormat(&d->vi) || (d->vi.format->id != pfGrayS && d->vi.format->id != pfRGBS && d->vi.format->id != pfYUV444PS)) {
         vsapi->setError(out, "Descale: Constant format GrayS, RGBS, and YUV444PS are the only supported input formats.");
-        vsapi->freeNode(d->node);
+        descale_cleanup(d, vsapi);
         return;
     }
 
@@ -732,20 +737,15 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 
     if (d->vi_dst.width < 1 || d->vi_dst.height < 1) {
         vsapi->setError(out, "Descale: width and height must be bigger than 0.");
-        vsapi->freeNode(d->node);
+        descale_cleanup(d, vsapi);
         return;
     }
 
     if (d->vi_dst.width > d->vi.width || d->vi_dst.height > d->vi.height) {
         vsapi->setError(out, "Descale: Output dimension has to be smaller than or equal to input dimension.");
-        vsapi->freeNode(d->node);
+        descale_cleanup(d, vsapi);
         return;
     }
-
-
-    d->maxCacheSize = static_cast<int>(vsapi->propGetInt(in, "cache_size", 0, &err));
-    if (err || d->maxCacheSize < 1)
-        d->maxCacheSize = 5;
 
     d->shift_h = static_cast<float>(vsapi->propGetFloat(in, "src_left", 0, &err));
     if (err)
@@ -780,7 +780,7 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 
         if (d->taps < 1) {
             vsapi->setError(out, "Descale: taps must be bigger than 0.");
-            vsapi->freeNode(d->node);
+            descale_cleanup(d, vsapi);
             return;
         }
         d->support = d->taps;
@@ -811,8 +811,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "width:int;"
             "height:int;"
             "src_left:float:opt;"
-            "src_top:float:opt;"
-            "cache_size:int:opt",
+            "src_top:float:opt;",
             descale_create, reinterpret_cast<void *>(bilinear), plugin);
 
     registerFunc("Debicubic",
@@ -822,8 +821,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "b:float:opt;"
             "c:float:opt;"
             "src_left:float:opt;"
-            "src_top:float:opt;"
-            "cache_size:int:opt",
+            "src_top:float:opt;",
             descale_create, reinterpret_cast<void *>(bicubic), plugin);
 
     registerFunc("Delanczos",
@@ -832,8 +830,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "height:int;"
             "taps:int:opt;"
             "src_left:float:opt;"
-            "src_top:float:opt;"
-            "cache_size:int:opt",
+            "src_top:float:opt;",
             descale_create, reinterpret_cast<void *>(lanczos), plugin);
 
     registerFunc("Despline16",
@@ -841,8 +838,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "width:int;"
             "height:int;"
             "src_left:float:opt;"
-            "src_top:float:opt;"
-            "cache_size:int:opt",
+            "src_top:float:opt;",
             descale_create, reinterpret_cast<void *>(spline16), plugin);
 
     registerFunc("Despline36",
@@ -850,7 +846,10 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
             "width:int;"
             "height:int;"
             "src_left:float:opt;"
-            "src_top:float:opt;"
-            "cache_size:int:opt",
+            "src_top:float:opt;",
             descale_create, reinterpret_cast<void *>(spline36), plugin);
+
+    registerFunc("CacheSize",
+             "size:int;",
+             descale_change_cache_size, nullptr, plugin);
 }

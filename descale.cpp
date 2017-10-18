@@ -494,10 +494,11 @@ static void descale_cleanup(DescaleData *d, const VSAPI *vsapi){
     delete d;
 }
 
-Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift) {
+Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift, DescaleMode dmode) {
     // merge all relevant information into a unique key
     uint64_t key = (src_res << 16) + dst_res;
     key <<= 32;
+    shift += static_cast<float>(dmode) / 10000;
     key += reinterpret_cast<unsigned int &>(shift);
 
     // fast-path check if matrix for this key already exists
@@ -616,10 +617,10 @@ static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, vo
         Matrix * vmatrix;
 
         if (process_h) {
-            hmatrix = genMatrix(d, width, d->vi_dst.width, d->shift_h);
+            hmatrix = genMatrix(d, width, d->vi_dst.width, d->shift_h, d->mode);
         }
         if (process_v) {
-            vmatrix = genMatrix(d, height, d->vi_dst.height, d->shift_v);
+            vmatrix = genMatrix(d, height, d->vi_dst.height, d->shift_v, d->mode);
         }
 
         VSFrameRef * intermediate = vsapi->newVideoFrame(fi, d->vi_dst.width, d->vi.height, nullptr, core);

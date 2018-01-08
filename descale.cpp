@@ -22,15 +22,90 @@
 using namespace std;
 
 
-typedef enum DescaleMode
+enum DescaleMode : int
 {
     bilinear = 0,
     bicubic  = 1,
     lanczos  = 2,
     spline16 = 3,
     spline36 = 4
-} DescaleMode;
+};
 
+struct DescaleKey {
+    char key[24];
+    int refcount = 1;
+    int offset = 0;
+    int src;
+    int dst;
+    float shift;
+    unsigned int hash = 2166136261u;
+
+    // this weird and inconsistent struct initialization came into being because of circular
+    // type dependencies between DescaleKey and DescaleData and desperate optimization.
+    // see init_keys() in DescaleData for the main part of the initialization.
+    DescaleKey(int src, int dst, float shift){
+        this->src = src;
+        this->dst = dst;
+        this->shift = shift;
+        add_var((short)src);
+        add_var((short)dst);
+        add_var(shift);
+    }
+
+    void init_hash(){
+        for (char i : key) {
+            hash ^= i;
+            hash *= 16777619u;
+        }
+    }
+
+    template<typename T>
+    void add_var(T t) {
+        memcpy(key+offset, &t, sizeof(t));
+        offset += sizeof(t);
+    }
+};
+
+struct DescaleKeyHash {
+    size_t operator()(const DescaleKey* k) const {
+        return k->hash;
+    }
+};
+
+struct DescaleKeyEqual {
+    bool operator()(const DescaleKey* lhs, const DescaleKey* rhs) const {
+        return memcmp(lhs->key, rhs->key, 24) == 0;
+    }
+};
+
+struct DescaleData {
+    double b, c;
+    float shift_h, shift_v;
+    int taps;
+    int support;
+    int bandwidth;
+    DescaleMode mode;
+    VSVideoInfo vi;
+    VSVideoInfo vi_dst;
+    VSNodeRef *node;
+    DescaleKey* hk;
+    DescaleKey* vk;
+
+    void init_keys() {
+        hk = new DescaleKey(vi.width, vi_dst.width, shift_h);
+        vk = new DescaleKey(vi.height, vi_dst.height, shift_v);
+        hk->add_var((float)this->b);
+        hk->add_var((float)this->c);
+        hk->add_var((short)this->taps);
+        hk->add_var((short)this->support);
+        hk->add_var((short)this->bandwidth);
+        hk->add_var((short)this->mode);
+        // premature optimization right here, look at it, isn't it beautifully ugly?
+        memcpy(&vk->key[vk->offset], &hk->key[vk->offset], hk->offset - vk->offset);
+        hk->init_hash();
+        vk->init_hash();
+    }
+};
 
 struct Matrix {
     vector<float> upper;
@@ -44,7 +119,7 @@ struct Matrix {
 };
 
 struct Node {
-    uint64_t key;
+    DescaleKey* key;
     Matrix* value;
     Node *prev, *next;
 };
@@ -53,7 +128,7 @@ class DoublyLinkedList {
 public:
     Node *front, *back;
     mutex list_lock;
-    Node* add_page_to_head(uint64_t key, Matrix* value) {
+    Node* add_page_to_head(DescaleKey* key, Matrix* value) {
         auto *page = new Node{key, value};
         lock_guard<mutex>lock(list_lock);
         if(!front && !back) {
@@ -67,9 +142,9 @@ public:
         return page;
     }
 
-    void move_page_to_head(Node *page) {
+    void move_page_to_head(Node* page) {
         lock_guard<mutex>lock(list_lock);
-        if(page==front) {
+        if(page == front) {
             return;
         }
         if(page == back) {
@@ -87,8 +162,8 @@ public:
         front = page;
     }
 
-    uint64_t remove_back_page() {
-        uint64_t k = 0;
+    DescaleKey * remove_back_page() {
+        DescaleKey * k;
         lock_guard<mutex>lock(list_lock);
         if(front == back) {
             k = back->key;
@@ -107,21 +182,8 @@ public:
 
 int max_cache_size = -1;
 DoublyLinkedList cacheList;
-unordered_map<uint64_t, Node*> cacheMap = unordered_map<uint64_t, Node*>();
+unordered_map<DescaleKey*, Node*, DescaleKeyHash, DescaleKeyEqual> cacheMap = unordered_map<DescaleKey*, Node*, DescaleKeyHash, DescaleKeyEqual>();
 shared_mutex cache_lock;
-
-struct DescaleData
-{
-    DescaleMode mode;
-    VSNodeRef * node;
-    int support;
-    VSVideoInfo vi;
-    VSVideoInfo vi_dst;
-    int bandwidth;
-    int taps;
-    double b, c;
-    float shift_h, shift_v;
-};
 
 
 static vector<double> transpose_matrix(int rows, const vector<double> &matrix)
@@ -491,23 +553,23 @@ static void process_plane_v(int height, int current_width, int &current_height, 
 
 static void descale_cleanup(DescaleData *d, const VSAPI *vsapi){
     vsapi->freeNode(d->node);
+    d->hk->refcount--;
+    d->vk->refcount--;
+    if (d->hk->refcount <= 0)
+        delete d->hk;
+    if (d->vk->refcount <= 0)
+        delete d->vk;
     delete d;
 }
 
-Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift, DescaleMode dmode) {
-    // merge all relevant information into a unique key
-    uint64_t key = (src_res << 16) + dst_res;
-    key <<= 32;
-    shift += static_cast<float>(dmode) / 10000;
-    key += reinterpret_cast<unsigned int &>(shift);
-
+Matrix* genMatrix(DescaleData *d, DescaleKey * key) {
     // fast-path check if matrix for this key already exists
     cache_lock.lock_shared();
     auto n = cacheMap.find(key);
     cache_lock.unlock_shared();
     if (n != cacheMap.end()) {
         // check the fast-path bool first
-        if(!n->second->value->ready){
+        if(!n->second->value->ready) {
             // wait for the matrix to be generated
             n->second->value->lock.lock_shared();
             n->second->value->lock.unlock_shared();
@@ -521,7 +583,7 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift, Descale
     if (n != cacheMap.end()) {
         cache_lock.unlock();
         // check the fast-path bool first
-        if(!n->second->value->ready){
+        if(!n->second->value->ready) {
             // wait for the matrix to be generated
             n->second->value->lock.lock_shared();
             n->second->value->lock.unlock_shared();
@@ -530,59 +592,63 @@ Matrix* genMatrix(DescaleData *d, int src_res, int dst_res, float shift, Descale
         return n->second->value;
     }
     // generate new matrix for given parameters
-    auto matrix = new Matrix;
+    auto matrix = new Matrix();
     // lock the matrix-specific mutex
     matrix->lock.lock();
     if(cacheMap.size() > max_cache_size && max_cache_size != -1) {
         // there can only be at least one element in the cacheList
-        uint64_t k = cacheList.remove_back_page();
+        DescaleKey* k = cacheList.remove_back_page();
         cacheMap.erase(k);
+        k->refcount--;
+        if(k->refcount <= 0)
+            delete k;
     }
+    key->refcount++;
     cacheMap[key] = cacheList.add_page_to_head(key, matrix);
     // unlock the global lock so the matrix generation doesn't block the whole filter
     cache_lock.unlock();
 
-    vector<double> weights = scaling_weights(d->mode, d->support, dst_res, src_res, d->b, d->c, shift);
-    vector<double> transposed_weights = transpose_matrix(src_res, weights);
+    vector<double> weights = scaling_weights(d->mode, d->support, key->dst, key->src, d->b, d->c, key->shift);
+    vector<double> transposed_weights = transpose_matrix(key->src, weights);
 
-    matrix->weights_left_idx.resize(dst_res);
-    matrix->weights_right_idx.resize(dst_res);
+    matrix->weights_left_idx.resize(key->dst);
+    matrix->weights_right_idx.resize(key->dst);
 
-    for (int i = 0; i < dst_res; ++i) {
-        for (int j = 0; j < src_res; ++j) {
-            if (transposed_weights[i * src_res + j] != 0.0) {
+    for (int i = 0; i < key->dst; ++i) {
+        for (int j = 0; j < key->src; ++j) {
+            if (transposed_weights[i * key->src + j] != 0.0) {
                 matrix->weights_left_idx[i] = j;
                 break;
             }
         }
-        for (int j = src_res - 1; j >= 0; --j) {
-            if (transposed_weights[i * src_res + j] != 0.0) {
+        for (int j = key->src - 1; j >= 0; --j) {
+            if (transposed_weights[i * key->src + j] != 0.0) {
                 matrix->weights_right_idx[i] = j + 1;
                 break;
             }
         }
     }
 
-    vector<double> multiplied_weights = multiply_sparse_matrices(dst_res, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights, weights);
+    vector<double> multiplied_weights = multiply_sparse_matrices(key->dst, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights, weights);
 
-    vector<double> upper (dst_res * dst_res, 0);
-    upper = compress_symmetric_banded_matrix(dst_res, d->bandwidth, multiplied_weights);
-    banded_ldlt_decomposition(dst_res, d->bandwidth, upper);
-    upper = uncrompress_symmetric_banded_matrix(dst_res, d->bandwidth, upper);
+    vector<double> upper (key->dst * key->dst, 0);
+    upper = compress_symmetric_banded_matrix(key->dst, d->bandwidth, multiplied_weights);
+    banded_ldlt_decomposition(key->dst, d->bandwidth, upper);
+    upper = uncrompress_symmetric_banded_matrix(key->dst, d->bandwidth, upper);
 
-    vector<double> lower = transpose_matrix(dst_res, upper);
-    multiply_banded_matrix_with_diagonal(dst_res, d->bandwidth, lower);
+    vector<double> lower = transpose_matrix(key->dst, upper);
+    multiply_banded_matrix_with_diagonal(key->dst, d->bandwidth, lower);
 
-    transposed_weights = compress_matrix(dst_res, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights);
+    transposed_weights = compress_matrix(key->dst, matrix->weights_left_idx, matrix->weights_right_idx, transposed_weights);
 
-    int compressed_columns = transposed_weights.size() / dst_res;
-    matrix->weights.resize(dst_res * compressed_columns, 0);
-    matrix->diagonal.resize(dst_res, 0);
-    matrix->lower.resize(dst_res * ((d->bandwidth + 1) / 2 - 1), 0);
-    matrix->upper.resize(dst_res * ((d->bandwidth + 1) / 2 - 1), 0);
+    int compressed_columns = transposed_weights.size() / key->dst;
+    matrix->weights.resize(key->dst * compressed_columns, 0);
+    matrix->diagonal.resize(key->dst, 0);
+    matrix->lower.resize(key->dst * ((d->bandwidth + 1) / 2 - 1), 0);
+    matrix->upper.resize(key->dst * ((d->bandwidth + 1) / 2 - 1), 0);
 
-    extract_compressed_lower_upper_diagonal(dst_res, d->bandwidth, lower, upper, matrix->lower, matrix->upper, matrix->diagonal);
-    for (int i = 0; i < dst_res; ++i) {
+    extract_compressed_lower_upper_diagonal(key->dst, d->bandwidth, lower, upper, matrix->lower, matrix->upper, matrix->diagonal);
+    for (int i = 0; i < key->dst; ++i) {
         for (int j = 0; j < compressed_columns; ++j) {
             matrix->weights[i * compressed_columns + j] = static_cast<float>(transposed_weights[i * compressed_columns + j]);
         }
@@ -617,10 +683,10 @@ static const VSFrameRef *VS_CC descale_get_frame(int n, int activationReason, vo
         Matrix * vmatrix;
 
         if (process_h) {
-            hmatrix = genMatrix(d, width, d->vi_dst.width, d->shift_h, d->mode);
+            hmatrix = genMatrix(d, d->hk);
         }
         if (process_v) {
-            vmatrix = genMatrix(d, height, d->vi_dst.height, d->shift_v, d->mode);
+            vmatrix = genMatrix(d, d->vk);
         }
 
         VSFrameRef * intermediate = vsapi->newVideoFrame(fi, d->vi_dst.width, d->vi.height, nullptr, core);
@@ -709,7 +775,7 @@ static void VS_CC descale_change_cache_size(const VSMap *in, VSMap *out, void *u
     if (size <= -1)
         return;
     while(cacheMap.size() > size) {
-        uint64_t k = cacheList.remove_back_page();
+        DescaleKey * k = cacheList.remove_back_page();
         cacheMap.erase(k);
     }
 }
@@ -719,7 +785,7 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
 {
     auto mode = static_cast<DescaleMode>(reinterpret_cast<uintptr_t>(userData));
 
-    auto d = new DescaleData;
+    auto d = new DescaleData();
 
     d->mode = mode;
     d->node = vsapi->propGetNode(in, "src", 0, nullptr);
@@ -798,6 +864,7 @@ static void VS_CC descale_create(const VSMap *in, VSMap *out, void *userData, VS
     }
 
     d->bandwidth = d->support * 4 - 1;
+    d->init_keys();
 
     vsapi->createFilter(in, out, funcname.c_str(), descale_init, descale_get_frame, descale_free, fmParallel, 0, d, core);
 }

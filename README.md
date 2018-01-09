@@ -22,7 +22,7 @@ descale.Despline36(clip src, int width, int height, float src_left=0.0, float sr
 descale.Despline36(clip src, int width, int height, int kernel="bilinear" float src_left=0.0, float src_top=0.0)
 ```
 ##### CacheSize:
-`descale.CacheSize(int size=-1)` changes the internal size of the matrix lru cache. -1 means no limit.
+`descale.CacheSize(int size=-1)` changes the internal size of the matrix lru cache. -1 (default) means no limit.
  
 
 ## How does this work?
@@ -47,10 +47,15 @@ We now have the original vector `x`.
 ### Linux
 ```
 g++ -std=c++17 -shared -fPIC -O2 descale.cpp -o libdescale.so
+
+clang -std=c++1z -shared -fPIC -O2 -lstdc++ descale.cpp -o libdescale.so
 ```
 
 ### Cross-compilation for Windows
 ```
-x86_64-w64-mingw32-g++ -std=c++17 -shared -fPIC -O2 descale.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -s -o libdescale.dll
+x86_64-w64-mingw32-g++ -std=c++17 -shared -fPIC -O2 descale.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -o libdescale.dll
+
+x86_64-w64-mingw32-clang++ -std=c++1z -shared -fPIC -O2 descale.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -s -o libdescale.dll
 ```
-(I couldn't spot any problems with higher optimization settings but it seems to actually perform worse on some systems.)
+I couldn't spot any problems with higher optimization settings but it seems to actually perform worse on some systems.<br>
+There isn't a big difference between gcc and clang but clang seems to perform just a tiny bit better in general.

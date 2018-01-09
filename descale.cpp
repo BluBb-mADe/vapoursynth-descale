@@ -276,7 +276,7 @@ static vector<double> compress_matrix(int rows, const vector<int> &lidx, const v
 
     vector<double> compressed (rows * max, 0);
     for (int i = 0; i < rows; ++i) {
-        for (int j = 0; j < max; ++j) {
+        for (int j = 0; j < ridx[i] - lidx[i]; ++j) {
             compressed[i * max + j] = matrix[i * columns + lidx[i] + j];
         }
     }

@@ -47,15 +47,10 @@ We now have the original vector `x`.
 ### Linux
 ```
 g++ -std=c++17 -shared -fPIC -O2 descale.cpp -o libdescale.so
-
-clang -std=c++1z -shared -fPIC -O2 -lstdc++ descale.cpp -o libdescale.so
 ```
 
 ### Cross-compilation for Windows
 ```
-x86_64-w64-mingw32-g++ -std=c++17 -shared -fPIC -O2 descale.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -o libdescale.dll
-
-x86_64-w64-mingw32-clang++ -std=c++1z -shared -fPIC -O2 descale.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -s -o libdescale.dll
+x86_64-w64-mingw32-g++ -std=c++17 -shared -O2 descale.cpp -static-libgcc -Wl,-Bstatic -lstdc++ -lpthread -s -o libdescale.dll
 ```
-I couldn't spot any problems with higher optimization settings but it seems to actually perform worse on some systems.<br>
-There isn't a big difference between gcc and clang but clang seems to perform just a tiny bit better in general.
+I couldn't spot any problems with higher optimization settings but it seems to actually perform worse on some systems.

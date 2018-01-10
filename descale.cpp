@@ -553,12 +553,14 @@ static void process_plane_v(int height, int current_width, int &current_height, 
 
 static void descale_cleanup(DescaleData *d, const VSAPI *vsapi){
     vsapi->freeNode(d->node);
-    d->hk->refcount--;
-    d->vk->refcount--;
-    if (d->hk->refcount <= 0)
-        delete d->hk;
-    if (d->vk->refcount <= 0)
-        delete d->vk;
+    if (d->hk != nullptr) {
+        d->hk->refcount--;
+        d->vk->refcount--;
+        if (d->hk->refcount <= 0)
+            delete d->hk;
+        if (d->vk->refcount <= 0)
+            delete d->vk;
+    }
     delete d;
 }
 

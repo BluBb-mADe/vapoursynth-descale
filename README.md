@@ -43,11 +43,15 @@ We now have the original vector `x`.
 
 ## Differences of this Fork to the Original
 
-This fork generates the above-described matrices lazily (or reuses them from cache) when needed (instead of generating them during instantiation) and caches them globally. The use-cases of this improvement are quite specific. The main benefit is that matrices can be reused in case of multiple instances of descale inside the same vapoursynth context. The second benefit is that if we use different resolutions in different instances in the same context they will be generated in the vapoursynth thread-pool whereas the original matrix creation happened on filter tree generation and is forced to run inside the single-threaded python (or whatever generates the filter-tree) context. Another (mostly irrelevant) benefit is that matrices now can be used for either orientation which means that for example for an aspect ratio of 1:1 only 1 matrix would be needed.
+This fork generates the above-described matrices lazily (or reuses them from cache) when needed and caches them globally (instead of generating them during instantiation).<br>
+This has three main advantages.
+ - Matrices can be reused in case of multiple instances of descale inside the same vapoursynth context.
+ - The Matrices for multiple filter instances with different parameters in the same context will be generated in the vapoursynth thread-pool whereas the original matrix creation happens on filter-tree generation itself and is therefore forced to run inside the single-threaded python (or whatever generates the filter-tree) context.
+  - Matrices now can be used for either orientation which means that for example for an aspect ratio of 1:1 only 1 matrix would be needed.
 
-I've made some very crude benchmarks without spotting any performance differences in a normal use-case so there seems to be no disadvantage to the original.
+[Getnative](https://github.com/Infiziert90/getnative) profits from the second and third point and the getnative functionality within the [Tsuzuru discord Bot](https://github.com/Infiziert90/Tsuzuru-Bot) additionally profits from the first point tremendously.
 
-An example of how this can drastically improve performance is getnative and especially the getnative functionality within the Tsuzuru discord bot.
+I've made some very crude benchmarks without spotting any performance differences in a normal use-case so there seems to be no obvious disadvantage to the original.
 
 ## Compilation
 
